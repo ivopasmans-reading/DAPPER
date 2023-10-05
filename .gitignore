@@ -161,3 +161,7 @@ doc-build
 dapper/mods/QG/f90/prms_*\.txt
 
 .pdb-pyhist
+
+#Eclipse IDE
+.project
+.pydevproject
