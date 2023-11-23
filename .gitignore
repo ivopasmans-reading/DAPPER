@@ -165,3 +165,5 @@ dapper/mods/QG/f90/prms_*\.txt
 #Eclipse IDE
 .project
 .pydevproject
+*eclipse*
+tmp
