@@ -94,6 +94,8 @@ class Stats(series.StatPrint):
             self._is_ens = True
             minN = min(Nx, N)
             self.do_spectral  = np.sqrt(Nx*N) <= rc.comps["max_spectral"]
+            
+            self.new_series('E',(N,Nx))
         else:
             self._is_ens = False
             minN = Nx
@@ -308,6 +310,8 @@ class Stats(series.StatPrint):
         now.kurt = np.nanmean(w @ A_pow / var**2 - 3)
 
         now.mad  = np.nanmean(w @ abs(A))
+        
+        now.E = E
 
         if self.do_spectral:
             if N <= Nx:
