@@ -23,6 +23,29 @@ class ens_method:
     rot: bool          = False
     fnoise_treatm: str = 'Stoch'
 
+@ens_method 
+class EnId:
+    """
+    Runs ensemble without DA but with adding noise. 
+    """
+    N: int 
+    
+    def assimilate(self, HMM, xx, yy):
+        # Init
+        E = HMM.X0.sample(self.N)
+        self.stats.assess(0, E=E)
+        
+        # Cycle
+        for k, ko, t, dt in progbar(HMM.tseq.ticker):
+            E = HMM.Dyn(E, t-dt, dt)
+            E = add_noise(E, dt, HMM.Dyn.noise, self.fnoise_treatm)
+
+            # Analysis update
+            if ko is not None:
+                self.stats.assess(k, ko, 'f', E=E)
+
+            self.stats.assess(k, ko, E=E)
+
 
 @ens_method
 class EnKF:
