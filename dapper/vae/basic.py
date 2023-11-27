@@ -15,50 +15,7 @@ from tensorflow.keras import layers
 
 PI = tf.constant(np.pi)
 
-
-#%% Simple example
-
-def simple_example():
-    #Dataset 
-    def create_data(N, seed=1000):
-        np.random.seed(seed)
-        x=np.random.normal(size=(N,2))
-        y = -np.hypot(x[:,0], 2*x[:,1])
-        return x, y
-        
-    
-    #NN
-    def create_model(dim_in):
-        L_in = layers.Input(shape=(dim_in,), name='L_in')
-        x = layers.BatchNormalization()(L_in)
-        #x=L_in
-        for l in range(3):
-            x = layers.Dense(16, activation='relu', name='L_hidden'+str(l))(x)
-            #x = layers.BatchNormalization()(x)
-        L_out = layers.Dense(1, name='L_out')(x)
-        
-        model = keras.Model(L_in,L_out)
-        model.compile(optimizer=keras.optimizers.SGD(),
-                      loss=keras.losses.MeanSquaredError(),
-                      metrics=[keras.metrics.MeanSquaredError(),
-                               keras.metrics.MeanAbsoluteError()]
-                      )
-        
-        return model
-       
-    k = 100
-    X,Y = create_data(1000) 
-    model = create_model(2)
-    model.fit(X[:k],Y[:k], epochs=100, validation_data=(X[k:],Y[k:]))
-
-    
-#%% Simple dense network. 
-
-#Stopping 
-stopper = tf.keras.callbacks.EarlyStopping(monitor='loss', 
-                                           patience=5, verbose=True,
-                                           restore_best_weights=True,
-                                           min_delta=0.05) 
+#%% Variational autoencoder based on dense neural network. 
 
 class SamplingLayer(layers.Layer):
     """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
@@ -73,13 +30,13 @@ class SamplingLayer(layers.Layer):
 class VAE(keras.Model):
     """ Variational autoencoder model. """
     
-    def __init__(self, encoder, decoder, mc_samples=1, **kwargs):
+    def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=1.e-2, **kwargs):
         super().__init__(**kwargs)
         self.mc_samples = mc_samples
         self.encoder = encoder
         self.decoder = decoder
         
-        self.l2_rotation = 1.0e-2
+        self.l2_rotation = l2_rotation 
         self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
         self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
@@ -94,46 +51,58 @@ class VAE(keras.Model):
         return metrics
     
     def reconstruction_loss(self, data):
+        """ Reconstruction loss estimate used by others. """
         _, _, z = self.encoder(data)
         x_mean, _, _ = self.decoder(z)
         loss = tf.square(data - x_mean)
         return 0.5 * tf.reduce_sum(loss, axis=1)
     
     def mc_reconstruction_loss(self, data, z):
+        """ Reconstruction loss estimated from Monte-Carlo approximation. """
         x_mean, x_log_var, x_sin  = self.decoder(z)  
         x_cos = tf.sqrt(1 - x_sin**2)
         #Turn error into its principal component
         error   = data - x_mean
-        error0  = x_cos[:,0:1] * error[:,0:1] - x_sin[:,0:1] * error[:,1:2] 
-        error1  = x_sin[:,0:1] * error[:,0:1] + x_cos[:,0:1] * error[:,1:2]
+        error0  = x_cos[:,0:1] * error[:,0:1] + x_sin[:,0:1] * error[:,1:2] 
+        error1  = x_sin[:,0:1] * error[:,0:1] - x_cos[:,0:1] * error[:,1:2]
         error12 = tf.keras.layers.Concatenate(axis=-1)([error0, error1])
-        #Penalty large variances
-        loss  = tf.reduce_sum(x_log_var, axis=1)
-        #Penalty errors in principal components frame. 
-        loss  += tf.reduce_sum(tf.square(error12) / tf.exp(x_log_var), axis=-1)
-        return 0.5 * loss
+        #-2 log p(z|x)
+        loss  = x_log_var
+        loss += tf.square(error12) / tf.exp(x_log_var)
+        return 0.5 * tf.reduce_sum(loss, axis=-1)
     
     def mc_angle_loss(self, data, z):
+        """ Regularization term to keep polar angle 1st principal component
+        small. """
         _, _, x_sin  = self.decoder(z)  
         #L2 regularization term for angles. 
         loss  = tf.reduce_sum(tf.square(x_sin), axis=-1)
         return 0.5 * self.l2_rotation * loss
         
     def kl_loss(self, data):
+        """ Exact Kullbeck-Leibler divergence for Gaussian and normal 
+        distribution. """ 
         #Dimension 
         k = data.shape[1]
         #KL loss
         z_mean, z_log_var, _ = self.encoder(data)
         #Trace Sigma + log 1/det(Sigma) - dim + ||mu-0||**2
-        loss = tf.exp(z_log_var) - z_log_var - k + tf.square(z_mean)
-        return 0.5 * tf.reduce_sum(loss, axis=1)
+        KL = -z_log_var - k + tf.square(z_mean) + tf.exp(z_log_var)
+        loss = 0.5 * tf.reduce_sum(KL, axis=1)
+        return loss
         
     def mc_kl_loss(self, data, z):
+        """ 
+        Kullbeck-Leibler divergence between Gaussian and normal distribution 
+        calculated based on Monte-Carlo approximation. 
+        """
         z_mean, z_log_var, _ = self.encoder(data)
-        loss  = tf.square(z)
-        loss -= tf.square(z - z_mean) / tf.exp(z_log_var)
-        loss -= z_log_var
-        return 0.5 * tf.reduce_sum(loss, axis=1)
+        #log p(z|x)
+        loss  = -0.5 * tf.square(z - z_mean) / tf.exp(z_log_var)
+        loss -= 0.5 * z_log_var
+        #log 1/p(z)
+        loss += 0.5 * tf.square(z) 
+        return tf.reduce_sum(loss, axis=1)
 
     def train_step(self, data):
         
@@ -176,58 +145,94 @@ class DenseVae(tuner.HyperModel):
     
     def build(self, hp):
         #Set hyperparameters.
-        self._build_default_hp(hp)
+        self.hp = self._build_default_hp(hp)
         
         #Build decoder/encoder-pair
-        state_dim = hp.Fixed('state_dim', 2)
-        latent_dim = hp.Fixed('latent_dim', 2)
-        encoder = self._build_encoder(state_dim, latent_dim)
-        decoder = self._build_decoder(state_dim, latent_dim)
+        encoder = self._build_encoder(hp.get('state_dim'), hp.get('latent_dim'))
+        decoder = self._build_decoder(hp.get('state_dim'), hp.get('latent_dim'))
         
         #Build actual model. 
-        model = VAE(encoder, decoder, mc_samples=self.hp.get('mc_samples'))
+        model = VAE(encoder, decoder, mc_samples=self.hp.get('mc_samples'),
+                    l2_rotation=self.hp.get('l2_rotation'))
         
         #Build learning function.
-        def lr_func(epoch):
-            return self.hp.get('lr_init') * 0.1**(2*epoch / self.hp.get('epochs'))
-        self.lr = tf.keras.callbacks.LearningRateScheduler(lr_func)
-        
         self.lr = tf.keras.callbacks.ReduceLROnPlateau("reconstruction_loss",
                                                        factor=0.5, patience=2,
                                                        min_delta=.5, mode='min',
                                                        verbose=True)
-        #lr = tf.keras.optimizers.schedules.PolynomialDecay(2e-3, steps, power=power)
+        
+        #Build stopper 
+        self.stopper = tf.keras.callbacks.EarlyStopping(monitor='loss', 
+                                                        patience=5, verbose=True,
+                                                        restore_best_weights=True,
+                                                        min_delta=0.01) 
         
         #Compile before use and return. 
         lr = self.hp.get('lr_init')
         model.compile(optimizer = keras.optimizers.Adam(learning_rate=lr))
         return model
     
-    def fit(self, hp, model, *args, **kwargs):        
+    def fit(self, hp, model, *args, **kwargs):  
         fit_args = {'epochs':hp.get('epochs'), 
                     'batch_size':hp.get('batch_size'),
                     'shuffle':True,
                     'callbacks':[],
                     **kwargs
                     }
-        fit_args['callbacks'] = fit_args['callbacks'] + [stopper, self.lr]
+        fit_args['callbacks'] = fit_args['callbacks'] + [self.stopper, self.lr]
         return model.fit(*args, **fit_args)
     
-    def _build_default_hp(self, hp):
-        self.hp = hp
-        self.hp.Fixed('epochs', 40)
-        self.hp.Int( 'batch_size', default=64, min_value=1, max_value=1024, sampling='log')
-        self.hp.Int('mc_samples', min_value=1, max_value=20, step=1)
-        self.hp.Float('lr_init', default=1e-2, min_value=1e-3, max_value=1e-2, step=1e-3)
-        self.hp.Int('no_layers', default=4, min_value=0, max_value=8, step=1)
-        self.hp.Int('no_nodes', default=50, min_value=2, max_value=1024, sampling='log')
-        self.hp.Boolean('use_rotation', default=False)
-        self.hp.Float('l2_rotation', default=1.0e-4, min_value=0.0, max_value=1.0e-3, step=1.0e-4)
+    def build_hp(self, *args, **kwargs):
+        """ 
+        Return HyperParameter object setting hyperparameter that differ from
+        default. 
         
-        step = 1e-2 / self.hp.get('no_nodes')
-        self.hp.Float('l1', min_value=0., max_value=10 * step, step=step)
+        args : tuple
+            Tuple with HyperParameter objects to add. 
+        kwargs : dict 
+            hyperparameter name, value-pairs. 
+        
+        """ 
+        hp = tuner.HyperParameters()  
+        
+        #Overwrite defaults
+        for arg in args:
+            hp.merge(arg)
+        
+        fixed = tuner.HyperParameters()
+        for key, value in kwargs.items():
+            fixed.Fixed(key, value)
+        hp.merge(fixed)
+        
+        return hp
     
+    def _build_default_hp(self, hp):
+        """ Set default hyperparameters. """
+        #Training setup
+        hp.Fixed('epochs', 50)
+        hp.Int('batch_size', default=64, min_value=1, max_value=1024, 
+               sampling='log')
+        hp.Float('lr_init', default=5e-3, min_value=5e-4, max_value=1e-2, 
+                 step=5e-4)
+        
+        #Basic layer setup
+        hp.Int('no_layers', default=4, min_value=0, max_value=8, step=1)
+        hp.Int('no_nodes', default=64, min_value=2, max_value=1024, 
+               sampling='log')
+        hp.Fixed('latent_dim', 2)
+        hp.Fixed('state_dim', 2)
+        
+        #Fine network details
+        hp.Int('mc_samples', min_value=1, max_value=10, step=1)
+        hp.Boolean('use_rotation', default=False)
+        hp.Float('l2_rotation', default=1.0e-2, min_value=1.0e-4, 
+                 max_value=1.0, sampling='log')
+        hp.Float('l1', min_value=0., max_value=1.0e-2, step = 1.0e-3)
+        
+        return hp
+               
     def _build_network(self, input_layer):
+        """ Build dense layers for encoder and decoder. """
         no_layers = self.hp.get('no_layers')
         no_nodes  = self.hp.get('no_nodes')
         
@@ -237,8 +242,8 @@ class DenseVae(tuner.HyperModel):
                              kernel_initializer='he_normal',
                              kernel_regularizer=tf.keras.regularizers.L1(self.hp.get('l1'))
                              )(x)
-            x = layers.LeakyReLU(0.3)(x)  
             x = layers.BatchNormalization()(x)
+            x = layers.LeakyReLU(0.3)(x)  
             
         return x
     
@@ -276,9 +281,9 @@ class DenseVae(tuner.HyperModel):
 
 #%% Tuning 
 
-hp = tuner.HyperParameters()
-
 def tune_DenseVae(x, trials=20):
+    """ Function to tune the hyperparameters in DenseVae. """
+    
     hypermodel = DenseVae()   
     file_dir = '/home/ivo/Code/VAE/tmp'
     
@@ -289,8 +294,10 @@ def tune_DenseVae(x, trials=20):
     hp = tuner.HyperParameters()
     hp.Int("no_layers", min_value=0, max_value=8, step=1)
     hp.Int("no_nodes", min_value=4, max_value=256, sampling='log')
-    hp.Int('mc_samples', min_value=1, max_value=20, step=1)
-    hp.Float('lr_init',  default=5e-3, min_value=1e-3, max_value=5e-3, step=1e-3)
+    hp.Boolean('use_rotation', default=True)
+    hp.Int('mc_samples', min_value=1, max_value=10, step=1)
+    hp.Float('lr_init',  default=5e-3, min_value=5e-4, max_value=5e-3, step=5e-4)
+    hp.Float('l2_rotation', default=1e-2)
 
     architecture = tuner.Hyperband(hypermodel=hypermodel,
                                               objective=tuner.Objective('loss', direction='min'),
