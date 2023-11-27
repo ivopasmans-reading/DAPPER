@@ -13,6 +13,8 @@ import keras_tuner as tuner
 from tensorflow import keras
 from tensorflow.keras import layers
 
+import os, dill
+
 PI = tf.constant(np.pi)
 
 #%% Variational autoencoder based on dense neural network. 
@@ -30,7 +32,8 @@ class SamplingLayer(layers.Layer):
 class VAE(keras.Model):
     """ Variational autoencoder model. """
     
-    def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=1.e-2, **kwargs):
+    def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=1.0e-2, 
+                 **kwargs):
         super().__init__(**kwargs)
         self.mc_samples = mc_samples
         self.encoder = encoder
@@ -140,6 +143,7 @@ class VAE(keras.Model):
         
         return losses
     
+    
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
     
@@ -152,8 +156,8 @@ class DenseVae(tuner.HyperModel):
         decoder = self._build_decoder(hp.get('state_dim'), hp.get('latent_dim'))
         
         #Build actual model. 
-        model = VAE(encoder, decoder, mc_samples=self.hp.get('mc_samples'),
-                    l2_rotation=self.hp.get('l2_rotation'))
+        self.model = VAE(encoder, decoder, mc_samples=self.hp.get('mc_samples'),
+                         l2_rotation=self.hp.get('l2_rotation'))
         
         #Build learning function.
         self.lr = tf.keras.callbacks.ReduceLROnPlateau("reconstruction_loss",
@@ -169,8 +173,8 @@ class DenseVae(tuner.HyperModel):
         
         #Compile before use and return. 
         lr = self.hp.get('lr_init')
-        model.compile(optimizer = keras.optimizers.Adam(learning_rate=lr))
-        return model
+        self.model.compile(optimizer = keras.optimizers.Adam(learning_rate=lr))
+        return self.model
     
     def fit(self, hp, model, *args, **kwargs):  
         fit_args = {'epochs':hp.get('epochs'), 
@@ -181,6 +185,43 @@ class DenseVae(tuner.HyperModel):
                     }
         fit_args['callbacks'] = fit_args['callbacks'] + [self.stopper, self.lr]
         return model.fit(*args, **fit_args)
+    
+    def _file_paths(self, file_path):
+        return {'dir'     : os.path.split(file_path)[0],
+                'name'    : os.path.split(file_path)[1],
+                'encoder' : file_path + '_encoder.tf',
+                'decoder' : file_path + '_decoder.tf',
+                'hp'      : file_path + '_hp.pkl'}
+    
+    def save(self, file_path):
+        paths = self._file_paths(file_path)
+        print(paths)
+        if not os.path.exists(paths['dir']):
+            os.mkdir(paths['dir'])
+            
+        self.model.encoder.save(paths['encoder'], save_format='tf')
+        self.model.decoder.save(paths['decoder'], save_format='tf')
+        with open(paths['hp'], 'bw') as stream:
+            dill.dump(self.hp.get_config(), stream)
+            
+    def load(self, file_path):
+        paths = self._file_paths(file_path)
+        for key in ['encoder','decoder','hp']:
+            if not os.path.exists(paths[key]):
+                msg = "File {:s} missing.".format(paths[key])
+                raise FileNotFoundError(msg)
+                
+        encoder = tf.keras.saving.load_model(paths['encoder'])
+        decoder = tf.keras.saving.load_model(paths['decoder'])
+        with open(paths['hp'], 'rb') as stream:
+            hp = dill.load(stream)
+            hp = hp['values']            
+        
+        model = VAE(encoder, decoder, mc_samples=hp['mc_samples'],
+                    l2_rotation=hp['l2_rotation'])
+        
+        return model, hp
+        
     
     def build_hp(self, *args, **kwargs):
         """ 

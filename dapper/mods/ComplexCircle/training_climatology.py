@@ -15,6 +15,8 @@ import shutil
 
 #Directory in which the figures will be stored. 
 FIG_PATH = None
+#File path used to save model 
+MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima'
 
 # %% Run the model.
 
@@ -68,6 +70,8 @@ hypermodel = vae.DenseVae()
 hp = hypermodel.build_hp(no_layers=4, no_nodes=50, use_rotation=True)
 model = hypermodel.build(hp)
 hypermodel.fit(hp, model, xx)
+if MODEL_PATH is not None:
+    hypermodel.save(MODEL_PATH)
 
 # Sample encoder
 zz_mu, zz_sig, zz = model.encoder.predict(xx[dko::dko])
