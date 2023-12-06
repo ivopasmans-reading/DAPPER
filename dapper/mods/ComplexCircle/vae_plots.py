@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from scipy import stats
 from dapper.mods import ComplexCircle as circle
 from scipy.stats import norm
-import os
+import os, shutil
 from abc import ABC, abstractmethod
 
 #Default settings for layout. 
@@ -37,7 +37,7 @@ class StepGenerator(object):
             self.n = len(self.steps) - 1
         return self.steps[self.n]
 
-class SeriesPlots: 
+class BasePlots: 
     """ 
     Abstract class that is used as template for figures that generate 
     plots based on series of data. 
@@ -179,7 +179,7 @@ class SeriesPlots:
     
     @property 
     def fig_path(self):
-        if self.fig_path is None:
+        if self.fig_dir is None:
             return None 
         else:
             return os.path.join(self.fig_dir, self.fig_name)
@@ -193,7 +193,7 @@ class SeriesPlots:
  
 #%% Plot CDFs.    
  
-class ProbPlots(SeriesPlots):
+class ProbPlots(BasePlots):
     """ 
     Class that is used to plot probability distribution of data in different
     series. 
@@ -433,7 +433,7 @@ class ProbPlots(SeriesPlots):
             
 #%% Plot covariances 
 
-class PrincipalPlots(SeriesPlots):
+class PrincipalPlots(BasePlots):
     """ 
     Class that is used to plot principal values and principal components 
     of the covariances used in the decoder p(x|z) with x in state space and 
@@ -631,6 +631,122 @@ class PrincipalPlots(SeriesPlots):
             cov1 = np.reshape(data1[:4],(2,2))
             add_ellipse(r1, theta1, cov1)
 
+#%% 2D plot of circle
+
+class CirclePlot(BasePlots):
+
+    def __init__(self, fig_dir):
+        self.fig_dir = fig_dir 
+        self.labels = set()
+        self.ens_for, self.ens_ana, self.tracks, self.obs = {}, {}, {}, {}
+
+    def add_ens_for(self, label, times, E):        
+        #Store data in dict. 
+        self.ens_for[label] = {'time': times, 'data': E}
+        self.labels = self.labels.union([label])
+        
+    def add_ens_ana(self, label, times, E):        
+        #Store data in dict. 
+        self.ens_ana[label] = {'time': times, 'data':E}
+        self.labels = self.labels.union([label])
+            
+    def add_track(self, label, times, x):
+        self.tracks[label] = {'time': times, 'data': x}
+        self.labels = self.labels.union([label])
+        
+    def add_obs(self, times, y):
+        self.obs = {'time': times, 'data':y}
+        
+    def plot_circle(self, ax, radius=1):
+        theta = np.linspace(0, 2*np.pi, 100)
+        ax.plot(radius * np.cos(theta), radius * np.sin(theta), '-',
+                color=(.7,.7,.7))
+        
+    def assign_styles(self):
+        styles = self.styles()
+        for style in styles:
+            if style[0] in self.tracks:
+                self.tracks[style[0]]['style'] = style 
+            if style[0] in self.ens_for:
+                self.ens_for[style[0]]['style'] = style 
+            if style[0] in self.ens_ana:
+                self.ens_ana[style[0]]['style'] = style
+        
+    def plot_time(self, time, fig_name='trajectory'):
+        
+        if not hasattr(self, 'axes') or self.axes is None:
+            plt.close('all')
+            self.fig, self.axes = plt.subplots(1, 1, figsize=(6, 6))
+            self.axes = np.array([self.axes])
+            self.assign_styles()
+        else:
+            for ax in self.axes.flatten():
+                ax.clear()
+        
+        self.fig_name = fig_name
+        self.handles = []
+        self.plot_circle(self.axes[0])
+        
+        for key, value in self.ens_for.items():
+            mask = value['time'] == time
+            
+            #Plot forecast ensemble
+            self.axes[0].plot(value['data'][mask][0,:,0], 
+                              value['data'][mask][0,:,1], 'o',
+                              alpha=.2, color = value['style'][1],
+                              label = value['style'][0], markeredgewidth=0)
+            
+            #Plot forecast mean
+            m = np.mean(value['data'][mask], axis=1)
+            h, = self.axes[0].plot(m[0,0], m[0,1], 'o',
+                                   alpha=1., color = value['style'][1], 
+                                   label = value['style'][0])
+            
+            self.handles.append(h)
+            
+        #Add observation 
+        mask = self.obs['time'] == time 
+        self.axes[0].plot(np.array([1,1])*self.obs['data'][mask][0], np.array([-2,2]),'k--')
+            
+        #Add truth
+        for key, value in self.tracks.items():
+            mask = value['time'] == time
+            h, = self.axes[0].plot(value['data'][mask][0,0], value['data'][mask][0,1], 
+                                   'o', alpha=1., color = value['style'][1],
+                                   label = value['style'][0])
+            self.handles.append(h)
+            
+        for ax in self.axes.flatten():
+            ax.grid()
+            ax.set_xlabel('x')
+            ax.set_ylabel('y')
+            ax.legend(handles=self.handles, loc='center')
+            ax.set_title('Time {:5d}'.format(time))
+            
+            ax.set_xlim(-1.25,1.25)
+            ax.set_ylim(-1.25,1.25)
+            ax.set_aspect(1)
+            
+    def animate_time(self, times, fig_name='movie_time', fps=30):
+        fig, ax = plt.subplots(1,1)
+        
+        if self.fig_dir is not None:
+            tmp_dir = os.path.join(self.fig_dir, 'tmp')
+            os.mkdir(tmp_dir)
+            
+            print('Printing figures.')
+            for it,t in  enumerate(times):
+                fig_name1 = os.path.join('tmp', 'frame_{:04d}'.format(it))
+                self.plot_time(t, fig_name=fig_name1)
+                self.save()
+                
+            print('Compiling figures into animation.')
+            fmt = os.path.join(tmp_dir,'frame_%04d')
+            file_path = os.path.join(self.fig_dir, fig_name+'.mp4')
+            cmd = (f'ffmpeg -f image2 -r {fps} -i {fmt} -vcodec libx264 -y '
+                   f'-profile:v high444 -refs 16 -crf 0 -preset ultrafast {file_path}')
+            os.system(cmd)
+            shutil.rmtree(tmp_dir)
 
 #%% Axes
 
