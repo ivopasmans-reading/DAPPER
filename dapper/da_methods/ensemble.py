@@ -45,8 +45,122 @@ class EnId:
                 self.stats.assess(k, ko, 'f', E=E)
 
             self.stats.assess(k, ko, E=E)
+            
+@ens_method 
+class EnVae:
+    """
+    Transforms ensemble to/from latent space. 
+    """
+    
+    vae: dict
+    N: int 
+    No: int 
+    
+    
+    def train_bkg_vae(self, model, E):
+        hypermodel = self.vae['hypermodel']
+        hp = self.vae['hp'].copy()
+        hp.values['batch_size'] = self.N
+        hp.values['lr_init'] *= .1
+        history, model = hypermodel.fit_bkg(hp, model, E)        
+        return model 
+    
+    def train_obs_vae(self, model, E, Obs, yy):
+        D = self.sample_inno(self.No, Obs, E, yy)
+        H = Obs.linear(np.eye(np.size(E,1)))
+        mu = np.mean(E, axis=0)
+        
+        hypermodel = self.vae['hypermodel']
+        hp = self.vae['hp'].copy()
+        hp.values['batch_size'] = self.N
+        hp.values['lr_init'] *= .1 
+        hp.values['use_rotation'] = False
+        history, model = hypermodel.fit_obs(hp, model, D, H=H, state=mu)
+        return model 
+        
+    def sample_inno(self, N, Obs, E, yy):
+        D = yy.reshape((1,-1)) - Obs(E)
+        D = D + Obs.noise.sample(np.size(D,0))
+        return D
+        
+    def assimilate(self, HMM, xx, yy):
+        from dapper.vae.basic import rotate
+        # Init
+        E = HMM.X0.sample(self.N)
+        bkg_model = self.vae['clima']
+        self.stats.assess(0, E=E)
+        
+        # Cycle
+        for k, ko, t, dt in progbar(HMM.tseq.ticker):
+            E = HMM.Dyn(E, t-dt, dt)
+            E = add_noise(E, dt, HMM.Dyn.noise, self.fnoise_treatm)
 
+            # Analysis update
+            if ko is not None:
+                self.stats.assess(k, ko, 'f', E=E)
+                
+                #Update weights vae models 
+                bkg_model = self.train_bkg_vae(bkg_model, E)
+                obs_model = self.train_obs_vae(bkg_model, E, HMM.Obs(ko), yy[ko])
+                
+                #Generate ensemble of latent innovations 
+                Dx = self.sample_inno(self.No, HMM.Obs(ko), E, yy[ko])
+                Dmu, Dvar, Dz = obs_model.encoder.predict(Dx)
+                Nmu, Nvar, Nz = obs_model.encoder.predict(Dx*0)
+                Dz = Dz - Nz
+                Dz = Dz.T
+                
+                #Generate samples from ensemble
+                Yx = yy[ko].reshape((1,-1)) - HMM.Obs(ko)(E)
+                Ymu, Yvar, Yz = obs_model.encoder.predict(Yx)
+                Yz = -Yz - np.mean(-Yz, axis=0, keepdims=True)
+                Yz = Yz.T
+                
+                #Background perturbations from ensemble. 
+                AzMu, AzVar, Az = bkg_model.encoder.predict(E)
+                dAz = Az - np.mean(Az, axis=0, keepdims=True)
+                dAz = dAz.T
+                
+                #Covariance of innovations R+HBH
+                Cz = np.cov(Dz, rowvar=True, ddof=1)
+                Q,L,Qt = np.linalg.svd(np.eye(self.N)-Yz.T@np.linalg.pinv(Cz)@Yz / (self.N-1))
 
+                #Correction to mean. 
+                Kz = dAz@Yz.T@np.linalg.pinv(Cz)@np.mean(Dz,axis=1,keepdims=True)/(self.N-1)
+                #Correction to ensemble perturburbations.
+                dAzz = dAz@Q@np.diag(np.sqrt(L))@Qt
+                
+                #Analysis ensemble members in latent space. 
+                Azz  = Az.T + dAzz + Kz
+                
+                #Sample in state space. 
+                AxxMu, AxxVar, AxxSin = bkg_model.decoder.predict(Azz.T)
+                Axx = np.exp(.5*AxxVar) * np.random.normal(size=np.shape(AxxVar))    
+                Exx = AxxMu + rotate(Axx, AxxSin[:,0])
+                
+                #Innovations in state space after DA
+                Dxx = yy[ko] - HMM.Obs(ko)(E)
+                Dxx = Dxx.T
+                
+                if True:
+                    print('Truth ',xx[k])
+                    print('Prior state ensemble ',np.mean(E.T,axis=1),np.std(E.T,axis=1,ddof=1))
+                    print('Prior state innovation ',np.mean(Dx.T,axis=1),np.std(Dx.T,axis=1,ddof=1))
+                    print('Prior latent ensemble ',np.mean(Az.T,axis=1),np.std(Az.T,axis=1,ddof=1))
+                    print('Prior latent ensemble perturbations',np.mean(dAz,axis=1),np.std(dAz,axis=1,ddof=1))
+                    print('Prior latent innovation ',np.mean(Dz,axis=1),np.std(Dz,axis=1,ddof=1))
+                    print('Eigenvalues ',L)
+                    print('Prior latent covariance ',Cz)
+                    print('Mean latent correction ',Kz)
+                    print('Post latent ensemble perturbations',np.mean(dAzz,axis=1),np.std(dAzz,axis=1,ddof=1))
+                    print('Post state ensemble ',np.mean(Exx.T,axis=1),np.std(Exx.T,axis=1,ddof=1))
+                    print('Post state innovation ',np.mean(Dxx,axis=1),np.std(Dxx,axis=1,ddof=1))
+                    
+                raise Exception('ok')
+                E = Exx
+
+            self.stats.assess(k, ko, E=E)
+            
 @ens_method
 class EnKF:
     """The ensemble Kalman filter.
