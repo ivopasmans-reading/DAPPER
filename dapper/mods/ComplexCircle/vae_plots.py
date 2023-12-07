@@ -114,7 +114,7 @@ class BasePlots:
         
         #Find right step
         for step in StepGenerator(order):
-            nticks = np.ceil(r / step)
+            nticks = np.ceil(r*order / step)
             if nticks > max_ticks:
                 break 
             else:
@@ -140,7 +140,7 @@ class BasePlots:
         
         if lims is None:
             lims = np.array(ax.get_xlim())
-        ticks = SeriesPlots.nice_ticks(lims, **kwargs)
+        ticks = BasePlots.nice_ticks(lims, **kwargs)
         
         ax.set_xticks(ticks)
         ax.set_xlim(ticks[0], ticks[-1])
@@ -161,7 +161,7 @@ class BasePlots:
         
         if lims is None:
             lims = np.array(ax.get_ylim())
-        ticks = SeriesPlots.nice_ticks(lims, **kwargs)
+        ticks = BasePlots.nice_ticks(lims, **kwargs)
         
         ax.set_yticks(ticks)
         ax.set_ylim(ticks[0], ticks[-1])
@@ -268,8 +268,8 @@ class ProbPlots(BasePlots):
         self.axes[1,0].set_xlabel('radius')
         self.axes[1,1].set_xlabel('polar angle')
         
-        self.set_nice_xlim(self.axes[0,0], symmetric=True, max_ticks=8)
-        self.set_nice_xlim(self.axes[0,1], symmetric=True, max_ticks=8)
+        for ax1 in self.axes[0]:
+            self.set_nice_xlim(ax1, symmetric=True, max_ticks=8)
         self.set_nice_xlim(self.axes[1,0], origin=True, max_ticks=8)
         self.axes[1,1].set_xlim(0,360)
         self.axes[1,1].set_xticks(np.arange(0,361,45))

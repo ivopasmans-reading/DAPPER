@@ -108,6 +108,8 @@ class VAE(keras.Model):
     
     def mc_reconstruction_loss(self, data, z):
         """ Reconstruction loss estimated from Monte-Carlo approximation. """
+        EPS = tf.constant(1e-6)
+        
         x_mean, x_log_var, x_sin  = self.decoder(z)  
         x_cos = tf.sqrt(1 - x_sin**2)
         #Turn error into its principal component
@@ -120,7 +122,7 @@ class VAE(keras.Model):
             error12 = error 
         #-2 log p(z|x)
         loss  = x_log_var
-        loss += tf.square(error12) / tf.exp(x_log_var)
+        loss += tf.square(error12) / (tf.exp(x_log_var) + EPS)
         return 0.5 * tf.reduce_sum(loss, axis=-1)
     
     def mc_angle_loss(self, data, z):
@@ -219,15 +221,15 @@ class DenseVae(tuner.HyperModel):
         #Build learning function.
         self.lr = [tf.keras.callbacks.ReduceLROnPlateau("reconstruction_loss",
                                                         factor=.5, patience=2,
-                                                        min_delta=.5, mode='min',
+                                                        min_delta=.05, mode='min',
                                                         verbose=False),
                    ]
         
         #Build stopper 
         self.stopper = [tf.keras.callbacks.EarlyStopping(monitor='loss', 
-                                                         patience=4, verbose=False,
+                                                         patience=5, verbose=False,
                                                          restore_best_weights=True,
-                                                         min_delta=0.05,
+                                                         min_delta=0.0,
                                                          start_from_epoch=10)]
         
         #Compile before use and return.  
