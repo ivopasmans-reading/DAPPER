@@ -11,61 +11,50 @@ import dapper.da_methods as da
 from dapper.mods import ComplexCircle as circle
 from dapper.mods.ComplexCircle import vae_plots as plots
 from dapper.vae import basic as vae
+from dapper.tools.seeding import set_seed
 import shutil
 from datetime import datetime 
 
 #Directory in which the figures will be stored. 
-FIG_DIR = None #'/home/ivo/Figures/vae/norot'
+FIG_DIR = '/home/ivo/Figures/vae/vae_da'
 #File path used to save model 
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima.keras'
 #Number of ensemble member
 Nens = 64
+#Times 
 
-# %% Run the model.
+def run_model(Ko, seed): 
+    Dyn = {'M': 2, 'model': circle.step, 'linear': circle.step, 'noise': 0}
 
-Dyn = {'M': 2, 'model': circle.step, 'linear': circle.step, 'noise': 0}
+    # Actual observation operator.
+    Obs = {'time_dependent': circle.create_obs}
 
-# Actual observation operator.
-Obs = {'time_dependent': circle.create_obs}
+    # Time steps
+    dt, dko = 1, 10
+    tseq = modelling.Chronology(dt=dt, K=Ko*dko, dko=dko, Tplot=Ko*dko*dt, BurnIn=0)
 
-# Time steps
-dt, K, dko = 1, 10000, 10
-tseq = modelling.Chronology(dt=dt, K=1*K, dko=dko, Tplot=K*dt, BurnIn=0*K*dt)
+    # State Space System setup.
+    circle.X0.seed = seed
+    HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, circle.X0)
 
-# State Space System setup.
-HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, circle.X0)
+    # Run the model
+    xx, yy = HMM.simulate()
+    climate = circle.data2pandas(xx)
 
-# Run the model
-xx, yy = HMM.simulate()
-climate = circle.data2pandas(xx)
-xp = None
+    return HMM, xx, yy
 
-# %% Data assimilate
+# %% Variational autoencoder for climatology.
 
-if False:
-    xpClim = da.EnId(N=Nens)
-    xpClim.assimilate(HMM, xx, yy, liveplots=False)
-    xpClim.xfor = np.mean(xpClim.stats.E.f, axis=1)
-    xpClim.xana = np.mean(xpClim.stats.E.a, axis=1)
-
-    xp = da.EnKF('Sqrt', N=50, infl=1.02, rot=True)
-    xp.assimilate(HMM, xx, yy, liveplots=False)
-    xp.xfor = np.mean(xp.stats.E.f, axis=1)
-    xp.xana = np.mean(xp.stats.E.a, axis=1)
-
-# %% Tune model
-
-if False:
-    tuned = vae.tune_DenseVae(xx)
-    print(datetime.now())
-
-# %% Variational autoencoder
-
+HMM, xx, _ = run_model(1000, 1000)
 
 #Create model
 hypermodel = vae.DenseVae()
 hp = hypermodel.build_hp(no_layers=4, no_nodes=64, use_rotation=False)
 model = hypermodel.build(hp)
+
+if False:
+    tuned = vae.tune_DenseVae(xx)
+    print(datetime.now())
 
 #Fit model weights
 hypermodel.fit(hp, model, xx, verbose=True)
@@ -76,39 +65,52 @@ if MODEL_PATH is not None:
 clima = {'hypermodel':hypermodel,'hp':hp,'clima':model}
 
 # Sample encoder
-zz_mu, zz_sig, zz = model.encoder.predict(xx[dko::dko])
+zz_mu, zz_sig, zz = model.encoder.predict(xx[HMM.tseq.dko::HMM.tseq.dko])
 zz_sig = np.exp(.5*zz_sig)
 
 # Sample decoder
-z = np.random.normal(size=(np.size(xx[dko::dko], 0), hp.get('latent_dim')))
+z = np.random.normal(size=(np.size(xx[HMM.tseq.dko::HMM.tseq.dko], 0), hp.get('latent_dim')))
 zxx_mu, zxx_pc, zxx_angle = model.decoder.predict(z)
 zxx_pc = np.exp(.5 * zxx_pc)
 zxx_std = vae.rotate(zxx_pc * np.random.normal(size=np.shape(zxx_pc)), zxx_angle[:, 0])
 zxx = zxx_mu + zxx_std
 
-#%% Recreate for training 
+# %% Data assimilate
 
 import importlib
 import tensorflow as tf
 importlib.reload(da)
 
-#if MODEL_PATH is not None:
-#    model = tf.keras.saving.load_model(MODEL_PATH)
+HMM, xx, yy = run_model(10, 2000)
+_, _, _ = run_model(100,3000)
+xps = []
 
-xp = da.EnVae(clima, Nens, 16*Nens)
-xp.assimilate(HMM, xx, yy)
+if False:
+    xps.append(da.EnId(N=Nens))
+    xps.append(da.EnKF('Sqrt', N=Nens, infl=1.02, rot=True))
+ 
+#xps.append(da.EnVae(clima, N=Nens, No=128*Nens, name='EnKF-D'))
+#xps.append(da.EnVae(clima, N=Nens, No=128*Nens, latent_background=True, name='VKF-B'))
+#xps.append(da.EnVae(clima, N=Nens, No=128*Nens, latent_background=True, 
+#                    latent_obs=True, name='VKF-BD'))
+
+for xp in xps:
+    xp.assimilate(HMM, xx, yy, liveplots=False)
+    xp.xfor = np.mean(xp.stats.E.f, axis=1)
+    xp.xana = np.mean(xp.stats.E.a, axis=1)
 
 # %% Plot histograms in state space
 
 plotState = plots.ProbPlots(FIG_DIR)
 if xx is not None:
-    plotState.add_series('clima', xx[1::dko])
-if xp is not None:
-    plotState.add_series('analysis_EnKF', xp.xana)
+    plotState.add_series('clima', xx[HMM.tseq.dko::HMM.tseq.dko])
 if zxx_mu is not None:
     plotState.add_series('clima_VAE_mean', zxx_mu)
 if zxx is not None:
     plotState.add_series('clima_VAE', zxx)
+for xp in xps:
+    plotState.add_series(xp.name, xp.ensembles['ana'].reshape((-1,2)))
+    
 plotState.plot_cdfs_state(fig_name='cdfs_state')
 plotState.save()
 
@@ -121,6 +123,8 @@ if zxx_mu is not None:
     plotLatent.add_series('clima_VAE_mean', zz_mu)
 if zxx is not None:
     plotLatent.add_series('clima_VAE', zz)
+for xp in xps:
+    plotLatent.add_series(xp.name, xp.ensembles['latent_ana'].reshape((-1,2)))
 plotLatent.plot_cdfs_latent(fig_name='cdfs_latent')
 plotLatent.save()
 

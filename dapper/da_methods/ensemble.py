@@ -22,6 +22,7 @@ class ens_method:
     infl: float        = 1.0
     rot: bool          = False
     fnoise_treatm: str = 'Stoch'
+    name: str          = ''
 
 @ens_method 
 class EnId:
@@ -55,24 +56,27 @@ class EnVae:
     vae: dict
     N: int 
     No: int 
-    
+    latent_obs: bool = False 
+    latent_background: bool = False
+    verbose: bool = False
     
     def train_bkg_vae(self, model, E):
+        print('MINMAX E ',np.min(E),np.max(E))
         hypermodel = self.vae['hypermodel']
         hp = self.vae['hp'].copy()
-        hp.values['batch_size'] = self.N
+        hp.values['batch_size'] = int(.2*self.N)
+        hp.values['epochs'] = 200
         hp.values['lr_init'] *= .1
         history, model = hypermodel.fit_bkg(hp, model, E)        
         return model 
     
-    def train_obs_vae(self, model, E, Obs, yy):
-        D = self.sample_inno(self.No, Obs, E, yy)
+    def train_obs_vae(self, model, Obs, E, D):
         H = Obs.linear(np.eye(np.size(E,1)))
         mu = np.mean(E, axis=0)
         
         hypermodel = self.vae['hypermodel']
         hp = self.vae['hp'].copy()
-        hp.values['batch_size'] = self.N
+        hp.values['batch_size'] = int(.2*self.N)
         hp.values['lr_init'] *= .1 
         hp.values['use_rotation'] = False
         history, model = hypermodel.fit_obs(hp, model, D, H=H, state=mu)
@@ -85,6 +89,9 @@ class EnVae:
         
     def assimilate(self, HMM, xx, yy):
         from dapper.vae.basic import rotate
+        self.ensembles = {'times':[],'for':[],'ana':[],'latent_for':[], 'latent_ana':[],
+                          'latent_blue':[], 'blue':[]}
+        
         # Init
         E = HMM.X0.sample(self.N)
         bkg_model = self.vae['clima']
@@ -97,69 +104,90 @@ class EnVae:
 
             # Analysis update
             if ko is not None:
+                print('ANALYSIS ',self.name,ko)
                 self.stats.assess(k, ko, 'f', E=E)
                 
+                self.ensembles['for'].append(E)
+                self.ensembles['times'].append(k)
+                
+                #Create innovations 
+                D = self.sample_inno(self.No, HMM.Obs(ko), E, yy[ko]) 
+                Y = yy[ko].reshape((1,-1)) - HMM.Obs(ko)(E)
+                
                 #Update weights vae models 
-                bkg_model = self.train_bkg_vae(bkg_model, E)
-                obs_model = self.train_obs_vae(bkg_model, E, HMM.Obs(ko), yy[ko])
+                if self.latent_background or self.latent_obs:
+                    if np.any(np.isnan(E)):
+                        raise FloatingPointError('NaN in input ensemble.')
                 
-                #Generate ensemble of latent innovations 
-                Dx = self.sample_inno(self.No, HMM.Obs(ko), E, yy[ko])
-                Dmu, Dvar, Dz = obs_model.encoder.predict(Dx)
-                Nmu, Nvar, Nz = obs_model.encoder.predict(Dx*0)
-                Dz = Dz - Nz
-                Dz = Dz.T
+                    bkg_model = self.vae['clima']
+                    bkg_model = self.train_bkg_vae(bkg_model, E)
+                if self.latent_obs:
+                    obs_model = self.train_obs_vae(bkg_model, HMM.Obs(ko), E, D)
+                    
+                    #Innovations to latent space. 
+                    Dmu, Dvar, Dz = obs_model.encoder.predict(D)
+                    Nmu, Nvar, Nz = obs_model.encoder.predict(D*0)
+                    D = Dz - Nz
+                     
+                    #Obs-ensemble covariance to latent space
+                    Ymu, Yvar, Y = obs_model.encoder.predict(Y)
+                     
+                #Reshape innovations, obs-ensemble covariance
+                Y = -Y - np.mean(-Y, axis=0, keepdims=True)
+                D, Y = D.T, Y.T
                 
-                #Generate samples from ensemble
-                Yx = yy[ko].reshape((1,-1)) - HMM.Obs(ko)(E)
-                Ymu, Yvar, Yz = obs_model.encoder.predict(Yx)
-                Yz = -Yz - np.mean(-Yz, axis=0, keepdims=True)
-                Yz = Yz.T
-                
-                #Background perturbations from ensemble. 
-                AzMu, AzVar, Az = bkg_model.encoder.predict(E)
-                dAz = Az - np.mean(Az, axis=0, keepdims=True)
-                dAz = dAz.T
+                #Ensemble background perturbations
+                Ef = E
+                if self.latent_background:
+                    Emu, Evar, Ef = bkg_model.encoder.predict(Ef)
+                Af = Ef - np.mean(Ef, axis=0, keepdims=True)
+                self.ensembles['latent_for'].append(Ef)
+                Af, Ef = Af.T, Ef.T
                 
                 #Covariance of innovations R+HBH
-                Cz = np.cov(Dz, rowvar=True, ddof=1)
-                Q,L,Qt = np.linalg.svd(np.eye(self.N)-Yz.T@np.linalg.pinv(Cz)@Yz / (self.N-1))
+                C = np.cov(D, rowvar=True, ddof=1)
+                if np.ndim(C)==0:
+                    C = np.reshape(C,(1,1))
+                Q,L,Qt = np.linalg.svd(np.eye(self.N)-Y.T@np.linalg.pinv(C)@Y / (self.N-1))
 
                 #Correction to mean. 
-                Kz = dAz@Yz.T@np.linalg.pinv(Cz)@np.mean(Dz,axis=1,keepdims=True)/(self.N-1)
+                Kd = Af@Y.T@np.linalg.pinv(C)@np.mean(D,axis=1,keepdims=True)/(self.N-1)
                 #Correction to ensemble perturburbations.
-                dAzz = dAz@Q@np.diag(np.sqrt(L))@Qt
+                Aa = Af@Q@np.diag(np.sqrt(L))@Qt
                 
                 #Analysis ensemble members in latent space. 
-                Azz  = Az.T + dAzz + Kz
+                Ea = Ef + Aa + Kd
+                Ea, Aa = Ea.T, Aa.T
+                self.ensembles['latent_ana'].append(Ea)
+                self.ensembles['latent_blue'].append(np.mean(Ea,axis=0))
+                
+                if np.any(np.isnan(Ea)):
+                    raise FloatingPointError('NaN in latent ensemble.')
                 
                 #Sample in state space. 
-                AxxMu, AxxVar, AxxSin = bkg_model.decoder.predict(Azz.T)
-                Axx = np.exp(.5*AxxVar) * np.random.normal(size=np.shape(AxxVar))    
-                Exx = AxxMu + rotate(Axx, AxxSin[:,0])
+                if self.latent_background:
+                    Emu, Evar, Esin = bkg_model.decoder.predict(Ea)
+                    Evar = np.exp(.5*Evar) * np.random.normal(size=np.shape(Evar))    
+                    Ea = Emu + rotate(Evar, Esin[:,0])
+                    
+                    Emu, _, _ = bkg_model.decoder.predict(self.ensembles['latent_blue'][-1].reshape((1,-1)))
+                    self.ensembles['blue'].append(Emu.flatten())
+                else:
+                    self.ensembles['blue'].append(self.ensembles['latent_blue'][-1])
+                    
+                if np.any(np.isnan(Ea)):
+                    raise FloatingPointError('NaN in state ensemble.')
                 
                 #Innovations in state space after DA
-                Dxx = yy[ko] - HMM.Obs(ko)(E)
-                Dxx = Dxx.T
+                D = yy[ko].reshape((1,-1)) - HMM.Obs(ko)(Ea)
                 
-                if True:
-                    print('Truth ',xx[k])
-                    print('Prior state ensemble ',np.mean(E.T,axis=1),np.std(E.T,axis=1,ddof=1))
-                    print('Prior state innovation ',np.mean(Dx.T,axis=1),np.std(Dx.T,axis=1,ddof=1))
-                    print('Prior latent ensemble ',np.mean(Az.T,axis=1),np.std(Az.T,axis=1,ddof=1))
-                    print('Prior latent ensemble perturbations',np.mean(dAz,axis=1),np.std(dAz,axis=1,ddof=1))
-                    print('Prior latent innovation ',np.mean(Dz,axis=1),np.std(Dz,axis=1,ddof=1))
-                    print('Eigenvalues ',L)
-                    print('Prior latent covariance ',Cz)
-                    print('Mean latent correction ',Kz)
-                    print('Post latent ensemble perturbations',np.mean(dAzz,axis=1),np.std(dAzz,axis=1,ddof=1))
-                    print('Post state ensemble ',np.mean(Exx.T,axis=1),np.std(Exx.T,axis=1,ddof=1))
-                    print('Post state innovation ',np.mean(Dxx,axis=1),np.std(Dxx,axis=1,ddof=1))
-                    
-                raise Exception('ok')
-                E = Exx
+                self.ensembles['ana'].append(Ea)
+                E = Ea
 
             self.stats.assess(k, ko, E=E)
+            
+        for key in self.ensembles:
+            self.ensembles[key] = np.array(self.ensembles[key])
             
 @ens_method
 class EnKF:
