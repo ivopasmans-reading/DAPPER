@@ -221,7 +221,7 @@ class DenseVae(tuner.HyperModel):
         #Build learning function.
         self.lr = [tf.keras.callbacks.ReduceLROnPlateau("reconstruction_loss",
                                                         factor=.5, patience=2,
-                                                        min_delta=.05, mode='min',
+                                                        min_delta=.1, mode='min',
                                                         verbose=False),
                    ]
         
@@ -229,7 +229,7 @@ class DenseVae(tuner.HyperModel):
         self.stopper = [tf.keras.callbacks.EarlyStopping(monitor='loss', 
                                                          patience=5, verbose=False,
                                                          restore_best_weights=True,
-                                                         min_delta=0.0,
+                                                         min_delta=0.01,
                                                          start_from_epoch=10)]
         
         #Compile before use and return.  
@@ -477,11 +477,7 @@ class DenseVae(tuner.HyperModel):
         
         return decoder
     
-       
-  
-
 #%% Tuning 
-
 def tune_DenseVae(x):
     """ Function to tune the hyperparameters in DenseVae. """
     
