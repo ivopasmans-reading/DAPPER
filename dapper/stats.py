@@ -311,6 +311,7 @@ class Stats(series.StatPrint):
 
         now.mad  = np.nanmean(w @ abs(A))
         
+        #Save whole ensemble.
         now.E = E
 
         if self.do_spectral:
