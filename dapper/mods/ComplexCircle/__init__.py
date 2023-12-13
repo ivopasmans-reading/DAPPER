@@ -81,7 +81,26 @@ class Rotation(tools.randvars.RV):
 X0 = Rotation(radius=1, stats=scipy.stats.uniform(-.1*np.pi,.1*np.pi))
  
 #Observation real part
-def create_obs(ko):
+def create_obs_factory(ind, sig):  
+    M = len(ind)
+    
+    def create_obs(ko):
+        """ Create time-dependent observation operator. """
+        
+        def sample(E):
+            if np.ndim(E)==1:
+                return np.reshape(E[ind], (M,))
+            else:
+                return np.reshape(E[:,ind], (-1,M))
+        
+        C = sig**2 * np.ones((M,))
+        Obs = {'M':M, 'model':sample, 'linear':sample,
+               'noise':tools.randvars.GaussRV(mu=0,C=C,M=M)}
+    
+        return modelling.Operator(**Obs)
+    return create_obs
+
+def create_obs_xy(ko):
     """ Create time-dependent observation operator. """
     
     def polar_sample(E):
@@ -92,11 +111,11 @@ def create_obs(ko):
         
     def sample(E):
         if np.ndim(E)==1:
-            return np.reshape(E[0], (1,))
+            return np.reshape(E, (2,))
         else:
-            return np.reshape(E[:,0], (-1,1))
+            return np.reshape(E, (-1,2))
         
-    Obs = {'M':1, 'model':sample, 'linear':sample,
+    Obs = {'M':2, 'model':sample, 'linear':sample,
            'noise':tools.randvars.GaussRV(mu=0,C=0.1,M=1)}
     
     return modelling.Operator(**Obs)
