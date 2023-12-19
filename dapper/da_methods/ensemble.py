@@ -12,6 +12,7 @@ from dapper.tools.progressbar import progbar
 from dapper.tools.randvars import GaussRV
 from dapper.tools.seeding import rng
 from . import da_method
+from abc import ABC, abstractmethod
 
 @da_method
 class ens_method:
@@ -26,19 +27,30 @@ class EnProcessor:
     """ Class that processes the ensemble and observations. """ 
     
     def __init__(self, **kwargs):
+        """ Class constructor. """
         pass 
     
-    def __call__(self, k, ko, y, E, Y, D):
-        return E, Y, D
-    
     def pre(self, k, ko, y, E, Y, D):
+        """ Function to be called on background ensemble."""
         return E, Y, D 
     
+    def __call__(self, k, ko, y, E, Y, D):
+        """ Function carrying out DA correction."""
+        return E, Y, D
+
     def post(self, k, ko, y, E, Y, D):
+        """ Function to be called on analysis ensemble. """
         return E, Y, D
     
     def set_hhm(self, HMM):
+        """ Link to Hidden Markov model."""
         self.HMM = HMM 
+        
+    def is_active(self, k, ko):
+        """ Indicate whether processor should be used in this step."""
+        return ko is not None
+    
+#----------------------------------------------------------------------
         
 class ControlCovariance(EnProcessor):
     """ 
@@ -78,12 +90,15 @@ class StochasticInno(Inno):
         #observation operator
         obs = self.HMM.ObsNow
         #Errors
-        Eps = mean0(obs.noise.sample(self.N))
+        eps = mean0(obs.noise.sample(self.N))
         #Deviations
         Eo = obs(E[:self.N])
+        #If number of innovations is larger than ensemble members,
+        #bootstrap. 
         if self.N > np.size(E,0):
             Eo = Eo[np.random.randint(0, len(Eo), size=(self.N,))]
-        D = y[None,...] - Eps - Eo        
+        #Calculate innovations.
+        D = y[None,...] - eps - Eo        
         return E, Y, D
 
 class Inflator(EnProcessor):
@@ -99,13 +114,13 @@ class PostInflator(Inflator):
     
     def __init__(self, infl=1.0, **kwargs):
         if isinstance(infl, (int, float, np.floating, np.integer)):
-            self.inflation = lambda ko : infl 
+            self.inflation = lambda k, ko : infl 
         else:
             self.inflation = infl
         
-    def __call__(self, k, ko, y, E, Y, D):
+    def post(self, k, ko, y, E, Y, D):
         A, mu = center(E)
-        E = mu + A * self.inflation(ko)
+        E = mu + A * self.inflation(k,ko)
         return E, Y, D
         
 class Rotator(EnProcessor):
@@ -124,85 +139,133 @@ class Rotator(EnProcessor):
         return E, Y, D
     
 #----------------------------------------------------------------------------------------
-
-class AugmentedSmoother(Assimilator):
-    """ 
-    Reshape an ensemble of states at different time steps into
-    an augmented ensemble of time,space-states. 
-    """ 
-    
-    def __init__(self, lag=0, **kwargs):
-        super().__init__(**kwargs)
-        self.no_times = None 
-        
-    def pre(self, k, ko, y, E, Y, D):
-        self.no_times = np.size(E,0)
-        E = np.transpose(E, [1,0,2])
-        E = np.reshape(E, (np.size(E,0),-1))
-        return E, Y, D
-    
-    def post(self, k, ko, y, E, Y, D):
-        E = np.reshape(E, (np.size(E,0), self.no_times, -1))
-        E = np.transpose(E, [1,0,2])
-        return E, Y, D 
-    
-    
-class FixedLagSmoother(Assimilator):
+       
+class EnStack: 
     """
-    Stores ensemble of states into memory and returns memory. 
+    First in, first out stack. 
     """
     
-    def __init__(self, j **kwargs):
-        super().__init__(**kwargs)
-        self.lag = lag
-        self.size = self.lag + 1
-        self.times, self.memory = None, None  
-    
-    def pre(self, k, ko, y, E, Y, D):
-        if self.memory is None:
-            self.times  = [k]
-            self.memory = E[None,...]
-        elif np.size(self.memory, 0)<self.size:
-            self.times  = np.append(self.times, k)
-            self.memory = np.concatenate((self.memory, E[None,...]), axis=0)
-        else: 
-            self.times  = np.roll(self.times, -1, axis=0)
-            self.memory = np.roll(self.memory, -1, axis=0)
-            self.memory[-1] = E 
-            self.times[-1]  = k 
-            
-        return self.memory, Y, D
-    
-    def post(self, k, ko, y, E, Y, D):       
-        self.memory = E[-self.size:] 
-        return self.memory[-1], Y, D
-    
-class Stack(EnProcessor):
-    
-    def __init__(self, size=1, output=1, **kwargs):
-        super.__init__(**kwargs)
-        self.size = size 
-        self.output = output 
-        self.times, self.stack = None, None  
+    def __init__(self, max_size):
+        self.max_size = max_size 
+        self.stack, self.times = None, []
         
-    def pre(self, k, ko, y, E, Y, D):
+    def push(self, k, E):  
+        """ Push ensemble onto stack. """
         if self.stack is None:
-            self.times  = [k]
+            self.times = [k]
             self.stack = E[None,...]
-        elif np.size(self.stack, 0)<self.size:
-            self.times  = np.append(self.times, k)
+        elif np.size(self.stack, 0)<self.max_size:
+            self.times = np.append(self.times, k)
             self.stack = np.concatenate((self.stack, E[None,...]), axis=0)
         else: 
-            self.times  = np.roll(self.times, -1, axis=0)
+            self.times = np.roll(self.times, -1, axis=0)
             self.stack = np.roll(self.stack, -1, axis=0)
-            self.stack[-1] = E 
-            self.times[-1] = k 
+            self.times[-1] = k
+            self.stack[-1] = E     
             
-        return self.stack[-self.output:], Y, D
+    def top(self):
+        """ Display top of stack. """
+        return self.times[-1], self.stack[-1] 
+    
+    def pop(self):
+        """ Display and remove top of stack. """
+        E = self.stack[-1]
+        t = self.times[-1]
+        self.stack = self.stack[:-1]
+        self.times = self.times[:-1]
+        return t, E 
+    
+    @property 
+    def size(self):
+        """ Number of ensembles stored in stack. """
+        return len(self.times)
+    
+class AugmentedSmoother(EnProcessor):
+    """ 
+    Receives an ensemble of states at a single time. Stores 
+    it and returns an ensemble of time,space-states.  
+    """
+    
+    def __init__(self, lag, **kwargs):
+        super().__init__(**kwargs)
+        self.Ea = EnStack(lag+1)
+        
+    def pre(self, k, ko, y, E, Y, D):
+        #Save ensemble
+        self.Ea.push(k, E)
+        #Transform to time,space-states
+        E = self._times2state(self.Ea.stack)
+        return E, Y, D
         
     def post(self, k, ko, y, E, Y, D):       
-        self.stack[-self.output:] = E
-        return self.stack[-1], Y, D
+        #Transform back from time,space-states 
+        self.Ea.stack = self._state2times(E)   
+        #Return latest ensemble.      
+        _, E = self.Ea.top()
+        return E, Y, D
+    
+    def _times2state(self, E):
+        """ Transform multiple times into 1 state."""
+        E = np.transpose(E, [1,0,2])
+        E = np.reshape(E, (np.size(E,0),-1))
+        return E 
+    
+    def _state2times(self, E):
+        """Split 1 state into multiple times."""
+        T = self.Ea.size #number of times in stack
+        E = np.reshape(E, (np.size(E,0), T, -1))
+        E = np.transpose(E, [1,0,2])
+        return E
+        
+class EnRts(EnProcessor):
+    """
+    EnRTS (Rauch-Tung-Striebel) smoother.
+
+    Refs: `bib.raanes2016thesis`
+    
+    Needs to procede an Assimilator object.
+    """
+    
+    def __init__(self, lag, decorr, **kwargs):
+        super().__init__(**kwargs)
+        #Lag to be stored before backward pass is carried out. 
+        self.lag = lag
+        #Storage for background and filtered ensemble. 
+        self.Ef, self.Ea = EnStack(lag+1), EnStack(lag+1)
+        #Decorrelation scale. 
+        if isinstance(decorr, (int,np.integer,float,np.floating)):
+            decorr = lambda k, ko: decorr
+        self.decorr = decorr 
+        
+    def pre(self, k, ko, y, E, Y, D):    
+        self.Ef.push(k, E)
+        return E, Y, D
+            
+    def post(self, k, ko, y, E, Y, D):
+        self.Ea.push(k, E)
+        
+        if self.Ea.size == self.lag+1:
+            self._backward_pass(ko)
+        
+        return E, Y, D
+        
+    def _backward_pass(self, ko):
+        Ef, Ea = self.Ef.stack, self.Ea.stack
+        times  = self.Ef.times 
+        itimes = range(len(times))
+        
+        for k in itimes[-1::-1]:
+            Aa = center(Ea[k  ])[0]
+            Af = center(Ef[k+1])[0]
+            
+            J  = tinv(Af) @ Aa 
+            J *= self.decorr(times[k],ko)
+            
+            Ea[k] = (Ea[k+1] - Ef[k+1]) @ J
+            
+    def is_active(self, k, ko):
+        #Also needs to work on non-DA steps. 
+        return True
     
 #----------------------------------------------------------------------
 
@@ -313,7 +376,7 @@ class Assimilator(EnProcessor):
         self.N  = N
         self.N1 = N-1
     
-class EnKF_D(Assimilator):
+class EtkfD(Assimilator):
     """ 
     Carry out ETKF using covariance estimated from innovations. 
     """
@@ -365,9 +428,14 @@ class SqrtAssimilator(Assimilator):
     numerical methods to calculate the square-root.  
     """
     
-    def __init__(self, solver=SqrtAssimilator.eig_solver, **kwargs):
+    def __init__(self, solver=None, **kwargs):
         super().__init__(**kwargs)
-        self.solver = solver 
+        
+        #Default solver for square-root.
+        if solver is None:
+            self.solver = SqrtAssimilator.eig_solver 
+        else:
+            self.solver = solver 
     
     def __call__(self, k, ko, y, E, Y, D):
         R  = self.HMM.ObsNow.noise.C
@@ -381,6 +449,10 @@ class SqrtAssimilator(Assimilator):
     
     @staticmethod 
     def explicit_solver(R,Y,D):
+        """
+        Not recommended due to numerical costs and instability.
+        Implementation using inv (in ens space).
+        """
         N = np.size(Y,0)
         Pw = sla.inv(Y @ R.inv @ Y.T + (N-1)*eye(N))
         T  = sla.sqrtm(Pw) * sqrt(N-1)
@@ -388,6 +460,7 @@ class SqrtAssimilator(Assimilator):
     
     @staticmethod 
     def svd_solver(R,Y,D):
+        """Implementation using svd of Y R^{-1/2}."""
         N       = np.size(Y,0)
         V, s, _ = svd0(Y @ R.sym_sqrt_inv.T)
         d       = pad0(s**2, N) + (N-1)
@@ -397,6 +470,10 @@ class SqrtAssimilator(Assimilator):
         
     @staticmethod 
     def ss_solver(R,Y,D):
+        """ 
+        Same as 'svd', but with slightly different notation
+        (sometimes used by Sakov) using the normalization sqrt(N1).
+        """
         N       = np.size(Y,0)
         S       = Y @ R.sym_sqrt_inv.T / sqrt(N-1)
         V, s, _ = svd0(S)
@@ -407,20 +484,41 @@ class SqrtAssimilator(Assimilator):
     
     @staticmethod 
     def eig_solver(R,Y,D):
+        """
+        'eig' in upd_a:
+        Implementation using eig. val. decomp.
+        """
         N      = np.size(Y,0)
         d, V   = sla.eigh(Y @ R.inv @ Y.T + (N-1)*eye(N))
         T      = V@diag(d**(-0.5))@V.T * sqrt(N-1)
         Pw     = V@diag(d**(-1.0))@V.T
         return Pw, T
   
-class SerialAssimilator(Assimilator):  
-    
-    def __init__(self, sorter=SerialAssimilator.random_sorter, 
-                 perturber=SerialAssimilator.stoch_perturber, **kwargs):
-        super().__init__(**kwargs)
-        self.sorter = sorter 
-        self.perturber = perturber
+class SerialAssimilator(Assimilator,ABC):  
+    """ 
+    Updating ensemble after assimilation of each observations. 
+    IMPORTANT: this Assimilator also update Y and D. 
+    """
         
+    def __call__(self, k, ko, y, E, Y, D):
+        #Observation covariance matrix
+        R = self.HMM.ObsNow.noise.C
+        #Ensemble perturbations 
+        mu = np.mean(E, axis=0, keepdims=True)
+        A  = E - mu
+        # Observations assimilated one-at-a-time:
+        inds = self.sorter(y, R, A)
+        #Requires de-correlation:
+        D = D @ R.sym_sqrt_inv.T
+        Y = Y @ R.sym_sqrt_inv.T
+        # Carry out actual DA
+        E,Y,D = self.assimilate(inds,mu,A,Y,D)
+        #Recorrelated
+        Y = Y @ R.sym_sqrt.T 
+        D = D @ R.sym_sqrt.T
+        
+        return E, Y, D
+    
     @staticmethod 
     def mono_sorter(y, R, A):
         return np.range(len(y))
@@ -436,17 +534,67 @@ class SerialAssimilator(Assimilator):
         
     @staticmethod 
     def random_sorter(y, R, A):
-        return rng.perturmutation(len(y))
+        return rng.permutation(len(y))
+
+class PerturbedSerialAssimilator(SerialAssimilator):
+    
+    def __init__(self, sorter=None, perturber=None, **kwargs):
+        super().__init__(**kwargs)
+        
+        #Set way to sort processing order observations.
+        if sorter is None:
+            self.sorter = SerialAssimilator.random_sorter
+        else:
+            self.sorter = sorter 
+        
+        #How to perturbe observations. 
+        if perturber is None:
+            self.perturber = PerturbedSerialAssimilator.stoch_perturber
+        else:
+            self.perturber = perturber
+            
+    def assimilate(self,inds,mu,A,Y,D):
+        # Enhancement in the nonlinear case:
+        # re-compute Y each scalar obs assim.
+        # But: little benefit, model costly (?),
+        # updates cannot be accumulated on S and T.
+
+        # More details: Misc/Serial_ESOPS.py.
+        for i, j in enumerate(inds):
+            Zj = self.perturber(i,j,A)
+
+            # Select j-th obs
+            Yj  = Y[:, j]       # [j] obs anomalies
+            dyj = D[0, j]         # [j] innov mean
+            DYj = Zj - Yj       # [j] innov anomalies
+            DYj = DYj[:, None]  # Make 2d vertical
+
+            # Kalman gain computation
+            C     = Yj@Yj + self.N-1  # Total obs cov
+            KGx   = Yj @ A / C  # KG to update state
+            KGy   = Yj @ Y / C  # KG to update obs
+
+            # Updates
+            A    += DYj * KGx
+            mu   += dyj * KGx
+            Y    += DYj * KGy
+            D[0] -= dyj * KGy
+            
+        #Update ensemble members. 
+        E = mu + A
+        return E, Y, D  
     
     @staticmethod 
     def stoch_perturber(i,j,A):
         # The usual stochastic perturbations.
+        N = np.size(A,0)
         Zj = mean0(rng.standard_normal(N))  # Un-coloured noise
         return Zj
         
     @staticmethod 
-    def  norm_stoch_perturber(i,j,A):
-        Zj  = SerialAssimilator.stoch_perturber(A)
+    def norm_stoch_perturber(i,j,A):
+        N = np.size(A,0)
+        Zj  = PerturbedSerialAssimilator.stoch_perturber(i,j,A)
         Zj *= sqrt(N/(Zj@Zj))
         return Zj 
     
@@ -461,6 +609,7 @@ class SerialAssimilator(Assimilator):
             A = svdi(V, s, UT)
             v = V[:, N-2]
         else:
+            raise RuntimeError('Code missing: no variable v.')
             # Orthogonalize v wrt. the new A
             #
             # v = Zj - Yj (from paper) requires Y==HX.
@@ -469,51 +618,12 @@ class SerialAssimilator(Assimilator):
             mult  = (v@A) / (Yj@A) # noqa
             v     = v - mult[0]*Yj # noqa
             v    /= sqrt(v@v)
-            Zj  = v*sqrt(N-1)  # Standardized perturbation along v
-            Zj *= np.sign(rng.standard_normal() - 0.5)  # Random sign
         
-    def __call__(self, k, ko, y, E, Y, D):
-        #Observation covariance matrix
-        R = self.HMM.ObsNow.noise.C
-        #Ensemble perturbations 
-        mu = np.mean(E, axis=0, keepdims=True)
-        A  = E - mu
-        # Observations assimilated one-at-a-time:
-        inds = self.sorter(y, R, A)
-        #  Requires de-correlation:
-        DR = D @ R.sym_sqrt_inv.T
-        YR = Y @ R.sym_sqrt_inv.T
-        # Enhancement in the nonlinear case:
-        # re-compute Y each scalar obs assim.
-        # But: little benefit, model costly (?),
-        # updates cannot be accumulated on S and T.
-
-        # More details: Misc/Serial_ESOPS.py.
-        for i, j in enumerate(inds):
-            Zj = self.perturber(i,j,A)
-
-            # Select j-th obs
-            Yj  = YR[:, j]       # [j] obs anomalies
-            dyj = DR[0, j]         # [j] innov mean
-            DYj = Zj - Yj       # [j] innov anomalies
-            DYj = DYj[:, None]  # Make 2d vertical
-
-            # Kalman gain computation
-            C     = Yj@Yj + self.N-1  # Total obs cov
-            KGx   = Yj @ A / C  # KG to update state
-            KGy   = Yj @ Y / C  # KG to update obs
-
-            # Updates
-            A    += DYj * KGx
-            mu   += dyj * KGx
-            Y    += DYj * KGy
-            dy   -= dyj * KGy
-                
-        E = mu + A
-        
-        return E, Y, D
+        Zj    = v*sqrt(N-1)  # Standardized perturbation along v
+        Zj   *= np.sign(rng.standard_normal() - 0.5)  # Random sign
+        return Zj
     
-class EnSRF(Assimilator):
+class EnSrf(SerialAssimilator):
     """
     Potter scheme, "EnSRF"
     - EAKF's two-stage "update-regress" form yields
@@ -523,32 +633,44 @@ class EnSRF(Assimilator):
       ensemble as 'Sqrt' (which processes obs as a batch)
       -- only the same mean/cov.
     """
+    
+    def __init__(self, sorter=None, **kwargs):
+        super().__init__(**kwargs)
+        
+        #Set way to sort processing order observations.
+        if sorter is None:
+            self.sorter = SerialAssimilator.random_sorter
+        else:
+            self.sorter = sorter 
       
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, inds, mu, A, Y, D):
         T  = eye(self.N)
         for j in inds:
             Yj = Y[:, j]
             C  = Yj@Yj + self.N1
             Tj = np.outer(Yj, Yj / (C + sqrt(self.N1*C)))
             T -= Tj @ T
+            
             Y -= Tj @ Y
+            
         w = D@Y.T@T/self.N1
         E = mu + w@A + T@A
-        
         return E, Y, D
         
-class DEnKF(Assimilator):
+class Denkf(Assimilator):
     """ 
     Uses "Deterministic EnKF" (sakov'08)
     """
     
     def __call__(self, k, ko, y, E, Y, D):
-        R  = self.HMM.ObsNow.C.noise
+        A  = E - np.mean(E, axis=0, keepdims=True)
+        d  = np.mean(D,axis=0)
+        R  = self.HMM.ObsNow.noise.C
         C  = Y.T @ Y + R.full*self.N1
         YC = Y@np.linalg.pinv(C)
         KG = A.T @ YC
         HK = Y.T @ YC
-        E  = E + KG@D - 0.5*(KG@Y.T).T
+        E  = E + KG@d - 0.5*(KG@Y.T).T
         return E, Y, D
         
         
@@ -570,90 +692,152 @@ class EnDa:
             processor.set_hhm(HMM)
             
         E = HMM.X0.sample(self.N)
-        E = np.reshape(E, (1,self.N,-1))
-        self.stats.assess(0, E=E[0])
+        self.stats.assess(0, E=E)
         
         # Cycle
         for k, ko, t, dt in progbar(HMM.tseq.ticker):
-            E[-1] = HMM.Dyn(E[-1], t-dt, dt)
-            E[-1] = add_noise(E[-1], dt, HMM.Dyn.noise, self.fnoise_treatm)
-
-            # Analysis update
-            if ko is not None:
-                self.stats.assess(k, ko, 'f', E=E[-1])
-                HMM.ObsNow = HMM.Obs(ko)
-                
-                D, Y = [], []
-                for process in self.processors[ 0:: 1]:
-                    E, Y, D = process.pre(k, ko, yy[ko], E, Y, D)
-                for process in self.processors[ 0:: 1]:
-                    E, Y, D = process(k, ko, yy[ko], E, Y, D)
-                for process in self.processors[-1::-1]:
-                    E, Y, D = process.post(k, ko, yy[ko], E, Y, D)
-
-            self.stats.assess(k, ko, E=E[-1])
+            E = HMM.Dyn(E, t-dt, dt)
+            E = add_noise(E, dt, HMM.Dyn.noise, self.fnoise_treatm)
             
-def enda_factory(upd_a, N, **kwargs):
-    """ 
-    Create ensemble DA method. 
-    """ 
-    #Steps to be taken by data assimilation method. 
-    kwargs = {**kwargs, 'N':N}
-    processors = []
+            #Logging if analysis update
+            if ko is not None:
+                self.stats.assess(k, ko, 'f', E=E)
+                HMM.ObsNow = HMM.Obs(ko)
+                yyNow = yy[ko]
+            else:
+                yyNow = None
+               
+            #Select processors to be used in this step.  
+            processors = [process for process in self.processors 
+                          if process.is_active(k,ko)]
+            
+            D, Y = [], []
+            for process in processors[ 0:: 1]:
+                E, Y, D = process.pre(k, ko, yyNow, E, Y, D)
+            for process in processors[ 0:: 1]:
+                E, Y, D = process(k, ko, yyNow, E, Y, D)
+            for process in processors[-1::-1]:
+                E, Y, D = process.post(k, ko, yyNow, E, Y, D)
+
+            if ko is not None:
+                self.stats.assess(k, ko, E=E)
+   
+   
+class EndaFactory:
     
-    #Create innovations. 
-    if 'PertObs' in upd_a or 'ETKF_D' in upd_a:
-        processors += [StochasticInno(**kwargs)]
-    else:
-        processors += [Inno(**kwargs)]
+    def build(self, N, filter='', smoother='', **kwargs):
+        self.options = {**kwargs, 'N':N,
+                        'filter':str.lower(filter), 
+                        'smoother':str.lower(smoother)}     
+
+        processors = []
+        processors = self.create_D_builder(processors)
+        processors = self.create_Y_builder(processors)
+        processors = self.create_modifications(processors)
+        processors = self.create_smoother(processors)
+        processors = self.create_filter(processors)
         
-    #Create obs-controlcovariance 
-    processors += [ControlCovariance(**kwargs)]
-    if 'VaeTransforms' in kwargs:
-        processors += kwargs['VaeTransforms']     
+        #Set attributes inherited from ens_method. 
+        enda = EnDa(N=self.options['N'], processors=processors)
+        for key in set(self.options).intersection(dir(enda)):
+            setattr(enda, key, self.options[key])
         
-    if 'explicit' in upd_a:
-        kwargs['solver'] = SqrtAssimilator.explicit_solver 
-    elif 'svd' in upd_a:
-        kwargs['solver'] = SqrtAssimilator.svd_solver 
-    elif 'sS' in upd_a:
-        kwargs['solver'] = SqrtAssimilator.ss_solver 
-    elif 'Sqrt' in upd_a:
-        kwargs['solver'] = SqrtAssimilator.eig_solver
+        return enda
         
-    if 'Stoch' in upd_a and 'Var1' in upd_a:
-        kwargs['perturber'] = SerialAssimilator.norm_stoch_perturber 
-    elif 'Stoch' in upd_a:
-        kwargs['perturber'] = SerialAssimilator.stoch_perturber 
-    elif 'ESOPS' in upd_a: 
-        kwargs['perturber'] = SerialAssimilator.esops_perturber
+    def create_D_builder(self, processors):
+        filter = self.options['filter']  
         
-    if 'ETKF_D' in upd_a:
-        processors += [EnKF_D(**kwargs)]
-    elif 'PertObs' in upd_a:
-        processors += [PertObs(**kwargs)]
-    elif 'Sqrt' in upd_a:
-        processors += [SqrtAssimilator(**kwargs)]
-    elif 'DEnKF' in upd_a:
-        processors += [DEnKF(**kwargs)]
-    elif 'Serial' in upd_a and 'perturber' in kwargs:
-        processors += [SerialAssimilator(**kwargs)]
-    elif 'Serial' in upd_a:
-        processors += [EnSRF(**kwargs)]
-    else:
-        raise KeyError("No analysis update method found: '" + upd_a + "'.")
+        if 'pertobs' in filter or 'etkf_d' in filter:
+            processors += [StochasticInno(**self.options)]
+        else:
+            processors += [Inno(**self.options)]  
+            
+        return processors 
+            
+    def create_Y_builder(self, processors):
+        #Create obs-controlcovariance 
+        if 'VaeTransforms' in self.options:
+            processors += self.options['VaeTransforms']     
+        else:
+            processors += [ControlCovariance()] 
+              
+        return processors
+            
+    def create_modifications(self, processors):
+        if 'rot' in self.options and self.options['rot'] is True:
+            processors += [Rotator(**self.options)]
+        if 'infl' in self.options:
+            processors += [PostInflator(**self.options)]
         
-    if 'rot' in kwargs and kwargs['rot'] is True:
-        processors += Rotator(**kwargs)
-    if 'infl' in kwargs:
-        processors += Inflator(**kwargs)
+        return processors  
     
-    #Set attributes inherited from ens_method. 
-    enda = EnDa(N, processors) 
-    for key in set(kwargs).intersection(dir(enda)):
-        setattr(enda, key, kwargs[key])
+    def create_smoother(self, processors):
+        smoother = self.options['smoother']
         
-    return enda
+        if 'enks' in smoother:
+            processors += [AugmentedSmoother(**self.options)]
+        elif 'ensrf' in smoother:
+            processors += [EnRTS(**self.options)]
+            
+        return processors
+            
+    def create_filter(self, processors):
+        filter = self.options['filter']
+        
+        if 'sqrt' in filter:
+            processors  = self._create_sqrt_filter(processors)
+        elif 'serial' in filter:
+            processors  = self._create_serial_filter(processors)
+        elif 'denkf' in filter:
+            processors += [Denkf(**self.options)]
+        elif 'etkf_d' in filter:
+            processors += [EtkfD(**self.options)]
+            
+        return processors 
+    
+    def _create_sqrt_filter(self, processors):
+        filter = self.options['filter']
+        
+        #Sqrt root filter
+        if 'explicit' in filter:
+            solver = SqrtAssimilator.explicit_solver 
+        elif 'svd' in filter:
+            solver = SqrtAssimilator.svd_solver 
+        elif 'ss' in filter:
+            solver = SqrtAssimilator.ss_solver 
+        else:
+            solver = SqrtAssimilator.eig_solver  
+        
+        processors += [SqrtAssimilator(solver=solver, **self.options)]
+        return processors 
+    
+    def _create_serial_filter(self, processors):
+        filter = self.options['filter']
+        
+        if 'stoch' in filter and 'var1' in filter:
+            perturber = PerturbedSerialAssimilator.norm_stoch_perturber 
+        elif 'stoch' in filter:
+            perturber = PerturbedSerialAssimilator.stoch_perturber 
+        elif 'esops' in filter: 
+            perturber = PerturbedSerialAssimilator.esops_perturber
+        else:
+            perturber = None 
+            
+        if 'mono' in filter:
+            sorter = SerialAssimilator.mono_sorter 
+        elif 'sorted' in filter: 
+            sorter = SerialAssimilator.var_sorter
+        else:
+            sorter = SerialAssimilator.random_sorter
+            
+        if perturber is None:
+            processors += [EnSrf(sorter=sorter,**self.options)]
+        else:
+            processors += [PerturbedSerialAssimilator(perturber=perturber, 
+                                                      sorter=sorter,
+                                                      **self.options)]
+        
+        return processors
             
 #----------------------------------------------------------------------
          
@@ -1080,20 +1264,8 @@ class EnRTS:
         for k, ko, _, _ in progbar(HMM.tseq.ticker, desc='Assessing'):
             self.stats.assess(k, ko, 'u', E=E[k])
             if ko is not None:
-                self.stats.assess(k, ko, 's', E=E[k])
-                
-                
-class EnRTS(Assimilator):
-    """ 
-    Backward part of the Rauch-Tung-Striebel smoother. 
-    Needs to be preceded by a forward filter part! 
-    """ 
-
-    def __call__(self, k, ko, y, E, Y, D):
+                self.stats.assess(k, ko, 's', E=E[k]) 
         
-        
-        
-
 def serial_inds(upd_a, y, cvR, A):
     """Get the indices used for serial updating.
 
