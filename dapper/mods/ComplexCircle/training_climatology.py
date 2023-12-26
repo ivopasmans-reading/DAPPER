@@ -17,7 +17,7 @@ import shutil, os
 from datetime import datetime 
 
 #Directory in which the figures will be stored. 
-FIG_DIR = '/home/ivo/Figures/vae/vae_B/dko10_sigo01'
+FIG_DIR = None #'/home/ivo/Figures/vae/vae_B/dko10_sigo01'
 #File path used to save model 
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima.keras'
 #Number of ensemble member
