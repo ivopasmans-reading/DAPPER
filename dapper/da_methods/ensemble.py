@@ -34,7 +34,7 @@ class EnProcessor:
         """ Function to be called on background ensemble."""
         return E, Y, D 
     
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, k, ko, y, E, Y, D):
         """ Function carrying out DA correction."""
         return E, Y, D
 
@@ -139,7 +139,8 @@ class Rotator(EnProcessor):
         return E, Y, D
     
 #----------------------------------------------------------------------------------------
-       
+# Smoothers. Act as pre/post processing to filter step. 
+    
 class EnStack: 
     """
     First in, first out stack. 
@@ -381,7 +382,7 @@ class EtkfD(Assimilator):
     Carry out ETKF using covariance estimated from innovations. 
     """
         
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, k, ko, y, E, Y, D):
         #Calculate ensemble perturbations. 
         A, Emu = center(E)
         
@@ -410,7 +411,7 @@ class PertObs(Assimilator):
     DA using classic, perturbed observations (Burgers'98) 
     """
     
-    def __call__(self, k, ko, y, E, Y, D):        
+    def assimilate(self, k, ko, y, E, Y, D):        
         R  = self.HMM.ObsNow.noise.C
         A  = E - np.mean(E, axis=0, keepdims=True)
         C  = Y.T @ Y + R * self.N1
@@ -437,7 +438,7 @@ class SqrtAssimilator(Assimilator):
         else:
             self.solver = solver 
     
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, k, ko, y, E, Y, D):
         R  = self.HMM.ObsNow.noise.C
         mu = np.mean(E, axis=0, keepdims=True)
         A  = E - mu 
@@ -662,7 +663,7 @@ class Denkf(Assimilator):
     Uses "Deterministic EnKF" (sakov'08)
     """
     
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, k, ko, y, E, Y, D):
         A  = E - np.mean(E, axis=0, keepdims=True)
         d  = np.mean(D,axis=0)
         R  = self.HMM.ObsNow.noise.C
@@ -715,7 +716,7 @@ class EnDa:
             for process in processors[ 0:: 1]:
                 E, Y, D = process.pre(k, ko, yyNow, E, Y, D)
             for process in processors[ 0:: 1]:
-                E, Y, D = process(k, ko, yyNow, E, Y, D)
+                E, Y, D = process.assimilate(k, ko, yyNow, E, Y, D)
             for process in processors[-1::-1]:
                 E, Y, D = process.post(k, ko, yyNow, E, Y, D)
 
