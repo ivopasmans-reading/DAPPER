@@ -96,14 +96,16 @@ importlib.reload(da)
 HMM, xx, yy = run_model(1000, dko, 2000)
 _, _, _ = run_model(1000, dko, 3000)
 
+factory = eda.EndaFactory()
+
 xps = []
 xps.append(eda.EnDa(Nens, [], name='no DA'))
 xps.append(da.EnKF('Sqrt', Nens, name='ETKF', rot=True))
-xps.append(eda.enda_factory('EnKF_D', Nens, No=128*Nens, name='EnKF_D'))
-xps.append(eda.enda_factory('EnKF_D', Nens, No=128*Nens, name='VKF-clima', 
-                            VaeTransforms = [vae_trans]))
-xps.append(eda.enda_factory('EnKF_D', Nens, No=128*Nens, name='VKF-B', 
-                            VaeTransforms = [vae_trans]))
+xps.append(factory.build(Nens, 'EnKF_D','',No=128*Nens, name='EnKF_D'))
+xps.append(factory.build(Nens, 'EnKF_D', No=128*Nens, name='VKF-clima', 
+                        VaeTransforms = [vae_trans]))
+xps.append(factory.build(Nens, 'EnKF_D', No=128*Nens, name='VKF-B', 
+                        VaeTransforms = [vae_trans]))
 
 for xp in xps:
     xp.assimilate(HMM, xx, yy, liveplots=False)
