@@ -16,10 +16,10 @@ from copy import copy
 
 #Directory to store figures. 
 fig_dir = "<dir for storing figures>"
-fig_dir = "/home/ivo/Figures/stommel/test"
+fig_dir = "/home/oceancirculation059/new_dpr_data_inversion/figs"
 DIR = "<topdir containing files downloaded from server or containing dirs with those files>"
-DIR = '/media/ivo/backup/hadley_et4'
-FILE_NAME = 'boxed_hadley_inverted0422.pkl'
+DIR = '/home/oceancirculation059/new_dpr_data_inversion/obs'
+FILE_NAME = 'boxed_hadley_inverted.pkl'
 hadley_file = os.path.join(DIR, FILE_NAME)
 if not os.path.exists(hadley_file):
     raise FileExistsError("Generate a file with Hadley EN4 output using tools/hadley_obs.")
@@ -900,13 +900,16 @@ def time_figure_with_phase(tseq):
     plt.close('all')
     fig = plt.figure(figsize=(14, 4))
     ax = fig.subplots(1, 3)
+    plt.subplots_adjust(left = 0.1,wspace=0.25)
     
-    times = tseq.tt/year
+    times = tseq.tt/year + 2004
+    
         
     for ax1 in ax[0:2]:
         ax1.grid()
-        ax1.set_xlim((0, times[-1]))
+        ax1.set_xlim((times[0], times[-1]))
         ax1.set_xlabel('Time [year]')
+    ax[2].grid()
     #ax[2].set_xlim((0,2.8))
     #ax[2].set_ylim((0,2.8))
     ax[2].set_aspect('equal', adjustable='box')
@@ -933,9 +936,11 @@ def plot_relative_spread(axes, tseq, E, yy):
         mu  = np.mean(field, axis=0)
         h = axes[0].plot(tseq.times/year, std/std[0], label=name)
         
+        """
         if any(mask):
             axes[0].plot(tseq.times[mask]/year, np.abs(obs[masko]-mu[mask])/std[0], 
-                         'x', color=h[0].get_color(), markersize=2)    
+                         'x', color=h[0].get_color(), markersize=2)   
+        """ 
             
     for name, field in zip(names[nyy:], E[nyy:]):
         std = np.std(field, axis=0, ddof=1)
@@ -945,10 +950,26 @@ def plot_relative_spread(axes, tseq, E, yy):
         ax.legend(loc='upper left', ncol=2)
         ax.set_ylabel('Relative spread')
         ax.grid(which='major', color=(.7,.7,.7), linestyle='-')
+
+
+def plot_more_spreads(ax,HMM,model,xx,yy):
+    times = HMM.tseq.times / year
+    #salt_diff,temp_diff, gamma
+    T0 = len(HMM.tseq.tto)
+    states=array2states(xx,times)
+    
+    temp_diff = np.reshape([np.exp(s.temp_diff) for s in states], (-1))
+    salt_diff = np.reshape([np.exp(s.salt_diff) for s in states], (-1))
+    gamma = np.reshape([np.exp(s.gamma) for s in states], (-1))
+    
+    times = times +2004
+    ax[0].plot(times[0:T0], temp_diff[0:T0], 'b-', alpha=.7)
+    ax[1].plot(times[0:T0], salt_diff[0:T0], 'b-', alpha=.7)
+    ax[2].plot(times[0:T0], gamma[0:T0], 'b-', alpha=.7)
         
 #Plot T vs t, S vs t, and T vs S phase portrait. The T and S in the phase portrait
 #are rescaled to a dimensionless form.
-def plot_truth_with_phase(ax,HMM,model,xx,yy):
+def plot_truth_with_phase(ax,HMM,model,xx,yy, classification):
     times = HMM.tseq.times / year
     
     states=array2states(xx,times)
@@ -961,30 +982,55 @@ def plot_truth_with_phase(ax,HMM,model,xx,yy):
     salt_divisors = np.array([model.salt_scale(state) for state in states])
     scaled_temp = np.divide(temp ,temp_divisors)
     scaled_salt = np.divide(salt ,salt_divisors)
-    #
     
-    #TH
-    mask = np.where(~TH, np.nan, 1.)
-    ax[0].plot(times, temp * mask, 'b-', alpha=.7)
-    ax[1].plot(times, salt * mask, 'b-', alpha=.7)
-    ax[2].plot(scaled_salt * mask, scaled_temp * mask, 'b-', alpha=.7)
-    
-    #SA
-    mask = np.where(TH, np.nan, 1.)
-    ax[0].plot(times, temp * mask, 'r-', alpha=.7)
-    ax[1].plot(times, salt * mask, 'r-', alpha=.7)
-    ax[2].plot(scaled_salt * mask, scaled_temp * mask, 'r-', alpha=.7)
-    
-    #accentuate initial conditions in phase portrait
-    ax[2].plot(scaled_salt[0],scaled_temp[0],'go')
-    
+    times += 2004
+    if classification=='truth':
+        ax[0].plot(times, temp, 'k-', linewidth=2)
+        ax[1].plot(times, salt, 'k-', linewidth=2)
+        ax[2].plot(scaled_salt, scaled_temp, 'k-', linewidth=2)
+        ax[2].plot(scaled_salt[0],scaled_temp[0],'ko')
+    elif classification=='modus':
+        ax[0].plot(times, temp, '-',color="#FFA500",linewidth=2)
+        ax[1].plot(times, salt, '-',color="#FFA500",linewidth=2)
+        ax[2].plot(scaled_salt, scaled_temp, '-',color="#FFA500",linewidth=2)
+        ax[2].plot(scaled_salt[0],scaled_temp[0],'o',color="#FFA500",linewidth=2)
+    else:
+        #TH
+        mask = np.where(~TH, np.nan, 1.)
+        ax[0].plot(times, temp * mask, 'b-', alpha=.7)
+        ax[1].plot(times, salt * mask, 'b-', alpha=.7)
+        ax[2].plot(scaled_salt * mask, scaled_temp * mask, 'b-', alpha=.7)
+        
+        #SA
+        mask = np.where(TH, np.nan, 1.)
+        ax[0].plot(times, temp * mask, 'r-', alpha=.7)
+        ax[1].plot(times, salt * mask, 'r-', alpha=.7)
+        ax[2].plot(scaled_salt * mask, scaled_temp * mask, 'r-', alpha=.7)
+        #accentuate initial conditions in phase portrait
+        ax[2].plot(scaled_salt[0],scaled_temp[0],'go')
+        
+        
     #Plot T=S line for reference
     axlim = max(scaled_temp.max(),scaled_salt.max())
     ax[2].plot(np.linspace(0,axlim),np.linspace(0,axlim), color="m", linestyle=':')
     
     
-    if len(yy)>0:
-        timeos = HMM.tseq.otimes / year
+    
+
+def plot_data(ax,HMM,model,yy, experiment_name):
+    
+    """
+    #Plot Truth
+    #if HMM.tseq.kko==[]:
+    true_states=array2states(truth,times)
+    true_temp = np.reshape(np.diff([s.temp[0] for s in true_states],axis=1), (-1))
+    true_salt = np.reshape(np.diff([s.salt[0] for s in true_states],axis=1), (-1))
+    ax[0].plot(times, true_temp, 'y-', linewidth=2)
+    ax[1].plot(times, true_salt, 'y-', linewidth=2)
+    ax[2].plot(true_salt, true_temp, 'y-', linewidth=2)
+    """
+    if len(yy)>0 and experiment_name in ['WarmingDA','noWarmingDA', 'noWarmingSynthDA', 'WarmingSynthDA']:
+        timeos = HMM.tseq.times / year + 2004
         std_temp = np.sqrt(np.sum(HMM.Obs.noise.C.diag[:2]))
         std_salt = np.sqrt(np.sum(HMM.Obs.noise.C.diag[2:]))
         
@@ -1119,3 +1165,4 @@ def cross_entropy(xx, E):
         
     
     
+
