@@ -133,7 +133,8 @@ class HiddenMarkovModel(struct_tools.NicePrint):
             x = Dyn(x, t-dt, dt)
             x = x + np.sqrt(dt)*Dyn.noise.sample(1).squeeze()
             if ko is not None:
-                yy[ko] = Obs(ko)(x) + Obs(ko).noise.sample(1).squeeze()
+                yy[ko] = Obs(ko)(x)
+                yy[ko] = Obs(ko).noise.add_sample(yy[ko]).squeeze()
             xx[k] = x
 
         return xx, yy

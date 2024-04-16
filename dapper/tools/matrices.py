@@ -7,7 +7,7 @@ import scipy.linalg as sla
 from numpy import ones, sqrt, zeros
 
 from dapper.tools.linalg import mrdiv, svd0, truncate_rank
-from dapper.tools.seeding import rng
+from dapper.tools.seeding import rng, set_seed
 
 
 class lazy_property:
@@ -48,12 +48,13 @@ def genOG(M):
     """Generate random orthonormal matrix."""
     # TODO 5: This (using Householder) is (slightly?) wrong,
     # as per section 4 of mezzadri2006generate.
-    Q, R = sla.qr(rng.standard_normal((M, M)))
+    
+    QR = rng.standard_normal((M, M))
+    Q, R = sla.qr(QR)
     for i in range(M):
         if R[i, i] < 0:
             Q[:, i] = -Q[:, i]
     return Q
-
 
 def genOG_modified(M, opts=(0, 1.0)):
     """Do `genOG` with modifications.
@@ -128,6 +129,7 @@ def genOG_1(N, opts=()):
     if opts == ():
         Q = genOG(N-1)
     else:
+        
         Q = genOG_modified(N-1, opts)
     return V @ sla.block_diag(1, Q) @ V.T
 

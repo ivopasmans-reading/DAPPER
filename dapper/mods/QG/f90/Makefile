@@ -5,14 +5,15 @@
 
 SHELL = /bin/bash
 
-FC = gfortran-5
+FC = gfortran
 FCFLAGS = -g -O2 -Wall
 LDFLAGS = $(FCFLAGS)
 LD = $(FC)
 
-INCDIR = /usr/local/lib
+INCDIR = $(nc-config --includedir)
 NCINC = -I/usr/local/include -I$(INCDIR)
-NCLIB = /usr/local/lib/libnetcdff.dylib /usr/local/lib/libnetcdf.dylib
+NCLIB = $(nc-config --libs)
+#NCLIB = /usr/local/lib/libnetcdff.dylib /usr/local/lib/libnetcdf.dylib
 
 QGSRC =\
 utils.f90\
@@ -45,7 +46,7 @@ mod:
 	@echo "WD = $(PWD)"
 
 qg: mod $(QGOBJ)
-	$(LD) $(LDFLAGS) -o qg $(QGOBJ) $(NCLIB)
+	$(NCLIB) $(INC) -o qg $(QGOBJ)
 
 clean:
 	rm -rf qg mod *.mod *.o *.log *.mexa64

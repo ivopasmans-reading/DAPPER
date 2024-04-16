@@ -11,8 +11,10 @@ from dapper.tools.matrices import funm_psd, genOG_1
 from dapper.tools.progressbar import progbar
 from dapper.tools.randvars import GaussRV
 from dapper.tools.seeding import rng
-from . import da_method
+from dapper.da_methods import da_method
 from abc import ABC, abstractmethod
+
+cc = [0,0]
 
 @da_method
 class ens_method:
@@ -46,6 +48,10 @@ class EnProcessor:
         """ Link to Hidden Markov model."""
         self.HMM = HMM 
         
+    def set_stats(self, stats):
+        """ Link to stats object. """
+        self.stats = stats
+        
     def is_active(self, k, ko):
         """ Indicate whether processor should be used in this step."""
         return ko is not None
@@ -61,7 +67,7 @@ class ControlCovariance(EnProcessor):
     def pre(self, k, ko, y, E, Y, D):
         obs = self.HMM.ObsNow
         Y = obs(E)
-        Y = Y - np.mean(Y, axis=0, keepdims=True)
+        Y = np.array(Y) - np.mean(Y, axis=0, keepdims=True)
         return E, Y, D
 
 class Inno(EnProcessor):
@@ -89,16 +95,16 @@ class StochasticInno(Inno):
     def pre(self, k, ko, y, E, Y, D):
         #observation operator
         obs = self.HMM.ObsNow
-        #Errors
-        eps = mean0(obs.noise.sample(self.N))
         #Deviations
         Eo = obs(E[:self.N])
+        Eo = obs.noise.add_sample(Eo)
         #If number of innovations is larger than ensemble members,
         #bootstrap. 
         if self.N > np.size(E,0):
             Eo = Eo[np.random.randint(0, len(Eo), size=(self.N,))]
         #Calculate innovations.
-        D = y[None,...] - eps - Eo        
+        D = y[None,...] - Eo     
+        D = np.array(D)
         return E, Y, D
 
 class Inflator(EnProcessor):
@@ -278,33 +284,38 @@ class VaeTransform(EnProcessor):
     
     def __init__(self, hypermodel, hp, model, **kwargs):
         self.hypermodel  = hypermodel 
-        self.hp          = hp
-         
+        self.hp          = hp.copy()
         self.ref_model = model 
         self.model     = model  
-        self.Elatent   = {'f':[],'a':[]}
         
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, k, ko, y, E, Y, D):        
         self.train(E, D)
         
         #Convert background ensemble in state space to latent space. 
         _, _, E = self.model.encoder.predict(E, verbose=0) 
+        E = np.array(E)
         
-        #Save for inspection. 
-        self.Elatent['f'].append(E)
+        #Save latent ensemble. 
+        if not hasattr(self.stats,'Elatent'):
+            self.stats.Elatent = {}
+            self.stats.Elatent['f'] = E.reshape((1,)+E.shape)
+            self.stats.Elatent['a'] = np.empty((0,)+E.shape)
+        else:
+            self.stats.Elatent['f'] = np.concatenate((self.stats.Elatent['f'],
+                                                      E[None,...]), axis=0)
         
         return E, Y, D
         
     def post(self, k, ko, y, E, Y, D):
         from dapper.vae.basic import rotate        
-        #Convert latent background ensemble to state space. 
-        Emu, Evar, Esin = self.model.decoder.predict(E, verbose=0) 
-        Evar = np.exp(.5*Evar) * np.random.normal(size=np.shape(Evar))    
-        E = Emu + rotate(Evar, Esin[:,0])
-        E = np.array(E)
         
         #Save for inspection. 
-        self.Elatent['a'].append(E)
+        self.stats.Elatent['a'] = np.concatenate((self.stats.Elatent['a'],
+                                                  E[None,...]), axis=0)
+        
+        #Convert latent background ensemble to state space. 
+        _, _, _, E = self.model.decoder.predict(E, verbose=0) 
+        E = np.array(E)
         
         return E, Y, D
         
@@ -313,33 +324,82 @@ class VaeTransform(EnProcessor):
     
 class CyclingVaeTransform(VaeTransform):
     
-    def train(self, E, D):
-        hp = self.hp.copy()
-        N = np.size(E, 0)
-        hp.values['batch_size'] = int(N)
-        hp.values['epochs'] = 200
-        hp.values['lr_init'] *= .1
-        history, self.model = self.hypermodel.fit_bkg(hp, self.model, E)    
+    def __init__(self, hypermodel, hp, model, **kwargs):
+        super().__init__(hypermodel, hp, model, **kwargs)
+        
+        self.hp.values['training'] = 'offline'
+        self.model = self.hypermodel.build(self.hp)
+        
+        self.ref_model = model
+        if self.ref_model is not None:
+            self.model.set_weights(self.ref_model.get_weights())
+    
+    def train(self, E, D): 
+        self.hp.values['batch_size'] = int(0.1*np.size(E,0))
+        self.model.optimizer.lr.assign(self.hp.values['lr_init']*1e-2)
+        
+        #Rescale 
+        layer = self.model.encoders[1].get_layer('z_mean_rescale')
+        Z = self.model.encoders[1](E)
+        Zstd = np.std(Z, axis=0, keepdims=True)
+        layer.kernel.assign(layer.kernel/Zstd)
+        
+        #Recenter 
+        Z = self.model.encoders[1](E)
+        Zmean = np.mean(Z, axis=0)
+        layer.bias.assign(layer.bias - Zmean)
+        
+        history = self.hypermodel.fit(self.hp, self.model, E, verbose=True) 
         
 class BackgroundVaeTransform(VaeTransform):
     
-    def train(self, E, D):
-        hp = self.hp.copy()
-        N = np.size(E, 0)
-        hp.values['batch_size'] = int(N)
-        hp.values['epochs'] = 200
-        hp.values['lr_init'] *= .1
-        history, self.model = self.hypermodel.fit_bkg(hp, self.ref_model, E)  
+    def __init__(self, hypermodel, hp, model, **kwargs):
+        super().__init__(hypermodel, hp, model, **kwargs)
+        
+        self.ref_model = model
+        self.hp.values['training'] = 'offline'
+        self.model = self.hypermodel.build_bkg(self.hp)
+        self.model.set_weights(self.ref_model.get_weights())
+    
+    def train(self, E, D): 
+        self.hp.values['batch_size'] = int(0.1*np.size(E,0))
+        self.model.optimizer.lr.assign(self.hp.values['lr_init']*1e-2)
+        self.model.set_weights(self.ref_model.get_weights())
+        
+        #Rescale 
+        layer = self.model.encoders[1].get_layer('z_mean_rescale')
+        Z = self.model.encoders[1](E)
+        Zstd = np.std(Z, axis=0, keepdims=True)
+        layer.kernel.assign(layer.kernel/Zstd)
+        
+        #Recenter 
+        Z = self.model.encoders[1](E)
+        Zmean = np.mean(Z, axis=0)
+        layer.bias.assign(layer.bias - Zmean)
+        
+        history = self.hypermodel.fit(self.hp, self.model, E, verbose=True) 
         
 class InnoVaeTransform(VaeTransform):    
+    
+    def __init__(self, hypermodel, hp, model, N, error_sample, **kwargs):
+        super().__init__(hypermodel, hp, model, **kwargs)
+        
+        self.N = N
+        self.ref_model = model
+        self.error_sample = error_sample
         
     def pre(self, k, ko, y, E, Y, D):
-        self.train(E, D)
+        from matplotlib import pyplot as plt 
+        
+        Y0 = Y+0
+        D0 = D+0
+        self.train(E, y)
             
         #Convert obs-control covariance in observation space. 
         Y = y[None,...] - self.HMM.ObsNow(E)
         _, _, Y = self.model.encoder.predict(Y)
         Y = -Y - np.mean(-Y, axis=0, keepdims=True)
+        Y = np.array(Y)
             
         #Convert inno ensemble in state space to latent space. 
         _, _, N = self.model.encoder.predict(D*0)
@@ -347,24 +407,54 @@ class InnoVaeTransform(VaeTransform):
         D = D - N
         D = np.array(D)
         
+        if False:
+            print('SHAPE ',np.shape(Y))
+            count0, bins0 = np.histogram(Y0,bins=16)
+            count, bins = np.histogram(Y,bins=16)
+        
+            plt.figure()
+            plt.plot(.5*bins0[:-1]+.5*bins0[1:],count0,'b-')
+            plt.plot(.5*bins[:-1]+.5*bins[1:],count,'r--')
+        
         return E, Y, D
     
     def post(self, k, ko, y, E, Y, D):
+        #_, _, _, _, D = self.model.decoder.predict(D)
+                
         return E, Y, D
-
-    def train(self, E, D):
-        obs = self.HMM.ObsNow
-        N = np.size(E, 0)
-        H = obs.linear(np.eye(np.size(E,1)))
-        mu = np.mean(E, axis=0)
         
-        hp = self.hp.copy()
-        hp.values['batch_size'] = int(N)
-        hp.values['epochs'] = 200
-        hp.values['lr_init'] *= .1 
-        hp.values['use_rotation'] = False
-        history, self.model = self.hypermodel.fit_obs(hp, self.ref_model, D, 
-                                                      H=H, state=mu)
+    def train(self, E, y):
+        M = self.HMM.ObsNow.M
+        self.model = self.hypermodel.build_inno(self.hp, self.ref_model, M)
+        
+        #Create pseudo innovations 
+        ind = np.random.randint(0, np.size(E,0), size=(self.N,))
+        E0  = np.take(E, ind, axis=0)
+        D0  = y[None,...] * np.ones((self.N,1))
+        
+        ind = np.random.randint(0, np.size(E,0), size=(self.N,))
+        E1  = np.take(E, ind, axis=0)
+        D1  = self.HMM.ObsNow(E1)
+        
+        #Create innovations 
+        D   = D0 + self.error_sample(D0) - D1
+        
+        #Rescale 
+        #IP layer = self.model.encoder.get_layer('encoder') 
+        layer = self.model.encoder.get_layer('z_mean_rescale')
+        _, _, Z = self.model.encoder(D)
+        Zstd = np.std(Z, axis=0, keepdims=True)
+        layer.kernel.assign(layer.kernel/Zstd)
+        
+        #Recenter 
+        _, _, Z = self.model.encoder(D)
+        Zmean = np.mean(Z, axis=0)
+        layer.bias.assign(layer.bias - Zmean)
+        
+        history = self.hypermodel.fit(self.hp, self.model, D, verbose=True) 
+        
+        Dl = self.model.encoder(D)[-1]
+        
         
 #----------------------------------------------------------------------
 
@@ -386,7 +476,7 @@ class EtkfD(Assimilator):
         #Calculate ensemble perturbations. 
         A, Emu = center(E)
         
-        #Reshape input. 
+        #Reshape input. Each ensemble member is a column. 
         Y, D = Y.T, D.T
         A = A.T
         
@@ -423,13 +513,339 @@ class PertObs(Assimilator):
         
         return E, Y, D
     
+#---------------------------------------------------------------------
+
+class ConvergenceCriterium:
+    
+    def __call__(self, iteration, x, fx):
+        return False 
+    
+    def __and__(self, other):
+        return  CombinedCriterium([self, other],[bool.__and__])
+    
+    def __or__(self, other):
+        return CombinedCriterium([self, other],[bool.__or__])
+        
+class MaxIterations(ConvergenceCriterium):
+    
+    def __init__(self, max_iterations=100):
+        self.max = max_iterations
+        
+    def __call__(self, iteration, x, fx):
+        return iteration >= self.max 
+    
+class AbsoluteError(ConvergenceCriterium):
+    
+    def __init__(self, tol=1.e-7):
+        self.tol = tol 
+        
+    def __call__(self, iteration, x, fx):
+        return fx <= self.tol 
+    
+class AbsoluteIncrement(ConvergenceCriterium):
+    
+    def __init__(self, tol=1.e-4, norm=np.linalg.norm):
+        self.tol = tol 
+        self.norm = norm 
+        self.previous = None 
+        
+    def __call__(self, iteration, x, fx):
+        if self.previous is None:
+            return False 
+        else:
+            norm = self.norm(x - self.previous)
+            self.previous = x 
+            return norm <= xtol 
+        
+class CombinedCriterium(ConvergenceCriterium):
+    
+    def __init__(self, criteria, combinations):
+        self.criteria = criteria
+        if not hasattr(combinations, '__iter__'):
+            self.combinations = [combinations] * (len(criteria) - 1)
+        if len(self.criteria) != len(self.combinations) + 1:
+            raise ValueError('Number of combinations and criteria do not match.')
+        
+    def __call__(self, iteration, x, fx):
+        if len(self.criteria)==0:
+            return False 
+        
+        has_converged = self.criteria[0](iteration, x, fx)
+        criteria = (c(iteration, x, fx) for c in self.criteria[1:])
+        for criterium, combi in zip(criteria, self.combinations):
+            has_converged = combi(has_converged, criterium(iteration, x, fx))
+        
+        return has_converged
+        
+class CostMinimizer(ABC):
+    
+    @abstractmethod 
+    def minimize(self, x0):
+        pass 
+    
+    @staticmethod 
+    def default_convergence_criterium(self):
+        criteria = [MaxIterations(), AbsoluteError(), AbsoluteIncrement()]
+        return CombinedCriterium(criteria, bool.__or__)
+        
+class NewtonMinimizer(CostMinimizer):
+    
+    def __init__(self, convergence_criterium=None):
+        self.has_converged = convergence_criterium
+        if self.has_converged is None:
+            self.has_converged = CostMinimizer.default_convergence_criterium()
+    
+    def minimize(self, cost, x):
+        iteration, J = 0, cost.D1(x)
+        while not self.has_converged(iteration, x, J):
+            dx  = cost.inverse_D2(x) @ cost.D1(x)
+            x  -= dx * conf 
+            iteration += 1
+            
+        return x 
+    
+class CostFunction: 
+    """ Class representing scalar cost function."""
+    
+    def __init__(self, J, **kwargs):
+        self.J = J 
+        self.options = kwargs
+    
+    def __call__(self, w):
+        """Cost-function value at w."""
+        return self.J(w)
+    
+    def D1(self, w):
+        """1st-order derivative of cost-function at w."""
+        if 'D1' in self.options:
+            return self.options['D1'](w)
+        elif 'inverse_D1' in self.options:
+            return np.linalg.pinv(self.options['inverse_D1'](w))
+        else:
+            return None 
+    
+    def inverse_D1(self, w):
+        """Inverse 1st-order derivative of cost-function"""
+        if 'inverse_D1' in self.options:
+            return self.options['inverse_D1'](w)
+        elif 'D1' in self.options:
+            return np.linalg.pinv(self.options['D1'](w))
+        else:
+            return None 
+    
+    def D2(self, w):
+        """2nd-order derivative."""
+        if 'D2' in self.options:
+            return self.options['D2'](w)
+        elif 'inverse_D2' in self.options:
+            return np.linalg.pinv(self.options['inverse_D2'](w))
+        else:
+            return None 
+    
+    def inverse_D2(self, w):
+        """Inverse 2nd-order derivative."""
+        if 'inverse_D2' in self.options:
+            return self.options['inverse_D2'](w)
+        elif 'inverse_D1' in self.options:
+            return np.linalg.pinv(self.options['D2'](w))
+        else:
+            return None 
+    
+class EnkfnAssimilator(Assimilator,ABC):
+    """Finite-size EnKF (EnKF-N).
+
+    Refs: `bib.bocquet2011ensemble`, `bib.bocquet2015expanding`
+
+    This implementation is pedagogical, prioritizing the "dual" form.
+    In consequence, the efficiency of the "primal" form suffers a bit.
+    The primal form is included for completeness and to demonstrate equivalence.
+    In `dapper.da_methods.variational.iEnKS`, however,
+    the primal form is preferred because it
+    already does optimization for w (as treatment for nonlinear models).
+
+    `infl` should be unnecessary (assuming no model error, or that Q is correct).
+
+    `Hess`: use non-approx Hessian for ensemble transform matrix?
+
+    `g` is the nullity of A (state anomalies's), ie. g=max(1,N-Nx),
+    compensating for the redundancy in the space of w.
+    But we have made it an input argument instead, with default 0,
+    because mode-finding (of p(x) via the dual) completely ignores this redundancy,
+    and the mode gets (undesireably) modified by g.
+
+    `xN` allows tuning the hyper-prior for the inflation.
+    Usually, I just try setting it to 1 (default), or 2.
+    Further description in hyperprior_coeffs().
+    """
+    
+    def __init__(self, solver, hessian, **kwargs):
+        super().__init__(**kwargs)
+        self.solver = solver
+        self.hessian = hessian
+        
+    def solve_l1(self):
+        def J(w):
+            return (0.5*np.sum((self.D - w@self.Y)**2) 
+                    +0.5*self.N1*self.cL*np.log(self.eN + w@w))
+        def Jp(w):
+            return -self.Y.T@(self.D-w@self.Y) + w*self.zeta_a(w)
+        def inv_Jpp(w):
+            return self.V * (pad0(self.s**2, self.N) + self.zeta_a(w))**(-1.0) @ self.V.T
+        cost = CostFunction(J, D1=Jp, inverse_D2=inv_Jpp)
+        
+        w0 = np.zeros((self.N,))
+        wa = self.solver.minimize(cost, w0)
+        l1 = sqrt(self.N1 / self.zeta_a(wa))
+        
+        return l1 
+          
+    def assimilate(self, k, ko, y, E, Y, D):
+        #Process input and save into object. 
+        self.build_attributes(Y, D)
+        #Limited size correction coefficient
+        l1 = self.solve_l1()
+        #Sqrt update 
+        self.Pw = (self.V * self.dgn_N(l1)**(-1.0)) @ self.V.T 
+        self.w  = self.D@self.Y.T@self.Pw 
+        self.T  = self.hessian(self)
+        
+        #Ensemble mean and deviations thereof. 
+        mu = np.mean(E, axis=0, keepdims=True)
+        A  = E - mu 
+        E  = mu + self.w@A + self.T@A
+        
+        return E, Y, D
+    
+    def build_attributes(self, Y, D):
+        self.R = self.HMM.ObsNow.noise.C 
+        self.Y = Y @ self.R.sym_sqrt_inv.T 
+        self.D = D @ self.R.sym_sqrt_inv.T 
+        self.N, self.N1 = np.size(self.Y,0), np.size(self.Y,0)-1
+        self.Nobs = np.size(Y,1)
+        self.V, self.s, self.UT = svd0(self.Y)
+        self.UD = self.UT @ self.D 
+        self.hyperprior_coeffs()
+        
+    @staticmethod 
+    def default_hessian(assimilator):
+        V  = assimilator.V 
+        l1 = assimilator.l1 
+        N1 = assimilator.N1
+        return (V * self.dgn_N(l1)**(-0.5)) @ V.T * sqrt(N1)
+    
+    @staticmethod 
+    def codependent_hessian(assimilator):
+        Y  = assimilator.Y 
+        N1 = assimilator.N1 
+        N  = assimilator.N
+        w  = assimilator.w 
+        eN = assimilator.eN 
+        Hw = Y@Y.T/N1 + eye(N) - 2*np.outer(w,w)/(eN+w@w)
+        return funm_psd(Hw, lambda x: x**-0.5)
+        
+    def hyperprior_coeffs(self):
+        """
+        Set EnKF-N inflation hyperparams.
+
+        The EnKF-N prior may be specified by the constants:
+
+        - `eN`: Effect of unknown mean
+        - `cL`: Coeff in front of log term
+
+        These are trivial constants in the original EnKF-N,
+        but are further adjusted (corrected and tuned) for the following reasons.
+
+        - Reason 1: mode correction.
+          These parameters bridge the Jeffreys (`xN=1`) and Dirac (`xN=Inf`) hyperpriors
+          for the prior covariance, B, as discussed in `bib.bocquet2015expanding`.
+          Indeed, mode correction becomes necessary when $$ R \rightarrow \infty $$
+          because then there should be no ensemble update (and also no inflation!).
+          More specifically, the mode of `l1`'s should be adjusted towards 1
+          as a function of $$ I - K H $$ ("prior's weight").
+          PS: why do we leave the prior mode below 1 at all?
+          Because it sets up "tension" (negative feedback) in the inflation cycle:
+          the prior pulls downwards, while the likelihood tends to pull upwards.
+
+        - Reason 2: Boosting the inflation prior's certainty from N to xN*N.
+          The aim is to take advantage of the fact that the ensemble may not
+          have quite as much sampling error as a fully stochastic sample,
+          as illustrated in section 2.1 of `bib.raanes2019adaptive`.
+
+        - Its damping effect is similar to work done by J. Anderson.
+
+        The tuning is controlled by:
+
+        - `xN=1`: is fully agnostic, i.e. assumes the ensemble is generated
+          from a highly chaotic or stochastic model.
+        - `xN>1`: increases the certainty of the hyper-prior,
+          which is appropriate for more linear and deterministic systems.
+        - `xN<1`: yields a more (than 'fully') agnostic hyper-prior,
+          as if N were smaller than it truly is.
+        - `xN<=0` is not meaningful.
+        """
+        self.eN = (self.N+1)/self.N
+        self.cL = (self.N+g)/self.N1
+
+        # Mode correction (almost) as in eqn 36 of `bib.bocquet2015expanding`
+        prior_mode = self.eN/self.cL # Mode of l1 (before correction)
+        diagonal   = pad0(self.s**2, self.N) + self.N1 # diag of Y@R.inv@Y + N1*I (Hessian of J)                                     
+        I_KH       = np.mean(diagonal**(-1))*N1   # ≈ 1/(1 + HBH/R)
+        mc         = sqrt(prior_mode**I_KH)       # Correction coeff
+
+        # Apply correction
+        self.eN /= mc
+        self.cL *= mc
+
+        # Boost by xN
+        self.eN *= self.xN
+        self.cL *= self.xN
+
+    def zeta_a(self, w):
+        """EnKF-N inflation estimation via w.
+
+        Returns `zeta_a = (N-1)/pre-inflation^2`.
+
+        Using this inside an iterative minimization as in the
+        `dapper.da_methods.variational.iEnKS` effectively blends
+        the distinction between the primal and dual EnKF-N.
+        """
+        return self.N1 * self.cL / (self.eN + w@w)
+        
+    def dng_N(self, l1):
+        return pad0((l1*self.s)**2, self.N) + self.N1
+    
+class DualEkfnAssimilator(EnkfnAssimilator):
+    
+    def solve_l1(self):
+        def J(l1):
+            return (np.sum(self.D**2/self.dgn_rk(l1))
+                    + self.eN/l1**2 + self.cL*np.log(l1**2))
+        def Jp(l1):
+            return (-2*l1 * np.sum(self.pad_rk(self.s**2) * self.D**2/self.dgn_rk(l1)**2) 
+                    -2*self.eN/l1**3 + 2*self.cL/l1)
+        def Jpp(l1):
+            return (8*l1**2 * np.sum(self.pad_rk(self.s**4) * self.D**2/self.dgn_rk(l1)**3) 
+                    + 6*self.eN/l1**4 + -2*self.cL/l1**2)
+        cost = CostFunction(J, D1=Jp, D2=Jpp)
+        
+        l1 = self.solver.minimise(cost, 1.0) 
+        return l1   
+    
+    def pad_rk(self, arr):
+        return pad0(arr, min(self.N, self.Nobs))
+    
+    def dgn_rk(self, l1):
+        return self.pad_rk((l1*self.s)**2) + self.N1
+    
+#-------------------------------------------------------------   
+    
 class SqrtAssimilator(Assimilator):
     """
     Square-root filters. Static methods allow different
     numerical methods to calculate the square-root.  
     """
     
-    def __init__(self, solver=None, **kwargs):
+    def __init__(self, solver, **kwargs):
         super().__init__(**kwargs)
         
         #Default solver for square-root.
@@ -439,13 +855,17 @@ class SqrtAssimilator(Assimilator):
             self.solver = solver 
     
     def assimilate(self, k, ko, y, E, Y, D):
+        #Observation error covariance.
         R  = self.HMM.ObsNow.noise.C
+        #Ensemble mean and deviations thereof. 
         mu = np.mean(E, axis=0, keepdims=True)
         A  = E - mu 
-        Pw, T = self.solver(R,Y,D)
+        #Calculate 
+        Pw, T = self.solver(R, Y, D)
         w  = D @ R.inv @ Y.T @ Pw
         HK = R.inv @ Y.T @ Pw @ Y
         E  = mu + w@A + T@A
+
         return E, Y, D
     
     @staticmethod 
@@ -490,9 +910,14 @@ class SqrtAssimilator(Assimilator):
         Implementation using eig. val. decomp.
         """
         N      = np.size(Y,0)
-        d, V   = sla.eigh(Y @ R.inv @ Y.T + (N-1)*eye(N))
-        T      = V@diag(d**(-0.5))@V.T * sqrt(N-1)
+        N1     = N-1
+        
+        Ctot   = Y @ R.inv @ Y.T + N1*eye(N)
+        d, V   = sla.eigh(Ctot)
+        
+        T      = V@diag(d**(-0.5))@V.T * sqrt(N1)
         Pw     = V@diag(d**(-1.0))@V.T
+        
         return Pw, T
   
 class SerialAssimilator(Assimilator,ABC):  
@@ -501,7 +926,7 @@ class SerialAssimilator(Assimilator,ABC):
     IMPORTANT: this Assimilator also update Y and D. 
     """
         
-    def __call__(self, k, ko, y, E, Y, D):
+    def assimilate(self, k, ko, y, E, Y, D):
         #Observation covariance matrix
         R = self.HMM.ObsNow.noise.C
         #Ensemble perturbations 
@@ -513,8 +938,8 @@ class SerialAssimilator(Assimilator,ABC):
         D = D @ R.sym_sqrt_inv.T
         Y = Y @ R.sym_sqrt_inv.T
         # Carry out actual DA
-        E,Y,D = self.assimilate(inds,mu,A,Y,D)
-        #Recorrelated
+        E, Y, D = self.sqrt_assimilate(inds, mu, A, Y, D)
+        #Recorrelate
         Y = Y @ R.sym_sqrt.T 
         D = D @ R.sym_sqrt.T
         
@@ -554,7 +979,7 @@ class PerturbedSerialAssimilator(SerialAssimilator):
         else:
             self.perturber = perturber
             
-    def assimilate(self,inds,mu,A,Y,D):
+    def sqrt_assimilate(self, inds, mu, A, Y, D):
         # Enhancement in the nonlinear case:
         # re-compute Y each scalar obs assim.
         # But: little benefit, model costly (?),
@@ -566,7 +991,7 @@ class PerturbedSerialAssimilator(SerialAssimilator):
 
             # Select j-th obs
             Yj  = Y[:, j]       # [j] obs anomalies
-            dyj = D[0, j]         # [j] innov mean
+            dyj = D[0, j]       # [j] innov mean
             DYj = Zj - Yj       # [j] innov anomalies
             DYj = DYj[:, None]  # Make 2d vertical
 
@@ -586,21 +1011,21 @@ class PerturbedSerialAssimilator(SerialAssimilator):
         return E, Y, D  
     
     @staticmethod 
-    def stoch_perturber(i,j,A):
+    def stoch_perturber(i, j, A):
         # The usual stochastic perturbations.
         N = np.size(A,0)
         Zj = mean0(rng.standard_normal(N))  # Un-coloured noise
         return Zj
         
     @staticmethod 
-    def norm_stoch_perturber(i,j,A):
+    def norm_stoch_perturber(i, j, A):
         N = np.size(A,0)
         Zj  = PerturbedSerialAssimilator.stoch_perturber(i,j,A)
         Zj *= sqrt(N/(Zj@Zj))
         return Zj 
     
     @staticmethod 
-    def esops_perturber(i,j,A):
+    def esops_perturber(i, j, A):
         # "2nd-O exact perturbation sampling"
         N = np.size(A,0)
         if i == 0:
@@ -620,8 +1045,8 @@ class PerturbedSerialAssimilator(SerialAssimilator):
             v     = v - mult[0]*Yj # noqa
             v    /= sqrt(v@v)
         
-        Zj    = v*sqrt(N-1)  # Standardized perturbation along v
-        Zj   *= np.sign(rng.standard_normal() - 0.5)  # Random sign
+        Zj  = v*sqrt(N-1)  # Standardized perturbation along v
+        Zj *= np.sign(rng.standard_normal() - 0.5)  # Random sign
         return Zj
     
 class EnSrf(SerialAssimilator):
@@ -674,9 +1099,6 @@ class Denkf(Assimilator):
         E  = E + KG@d - 0.5*(KG@Y.T).T
         return E, Y, D
         
-        
-        
-    
 #----------------------------------------------------------------------
 
 @ens_method        
@@ -689,8 +1111,10 @@ class EnDa:
    
     def assimilate(self, HMM, xx, yy):
         # Init
+        self.HMM = HMM
         for processor in self.processors:
             processor.set_hhm(HMM)
+            processor.set_stats(self.stats)
             
         E = HMM.X0.sample(self.N)
         self.stats.assess(0, E=E)
@@ -732,9 +1156,9 @@ class EndaFactory:
                         'smoother':str.lower(smoother)}     
 
         processors = []
+        processors = self.create_modifications(processors)
         processors = self.create_D_builder(processors)
         processors = self.create_Y_builder(processors)
-        processors = self.create_modifications(processors)
         processors = self.create_smoother(processors)
         processors = self.create_filter(processors)
         
@@ -756,11 +1180,11 @@ class EndaFactory:
         return processors 
             
     def create_Y_builder(self, processors):
+        processors += [ControlCovariance()] 
         #Create obs-controlcovariance 
         if 'VaeTransforms' in self.options:
             processors += self.options['VaeTransforms']     
-        else:
-            processors += [ControlCovariance()] 
+            
               
         return processors
             
@@ -793,6 +1217,10 @@ class EndaFactory:
             processors += [Denkf(**self.options)]
         elif 'etkf_d' in filter:
             processors += [EtkfD(**self.options)]
+        elif 'no da' in filter:
+            processors += []
+        else:
+            raise KeyError('No Kalman filter specified.')
             
         return processors 
     
@@ -940,10 +1368,11 @@ def EnKF_analysis(E, Eo, hnoise, y, upd_a, stats=None, ko=None):
             d, V   = sla.eigh(Y @ R.inv @ Y.T + N1*eye(N))
             T      = V@diag(d**(-0.5))@V.T * sqrt(N1)
             Pw     = V@diag(d**(-1.0))@V.T
-            HK     = R.inv @ Y.T @ (V @ diag(d**(-1)) @ V.T) @ Y
+            HK     = R.inv @ Y.T @ (V @ diag(d**(-1.0)) @ V.T) @ Y
+            
         w = dy @ R.inv @ Y.T @ Pw
-        E = mu + w@A + T@A
-
+        E = mu  + T@A + w@A
+        
     elif 'Serial' in upd_a:
         # Observations assimilated one-at-a-time:
         inds = serial_inds(upd_a, y, R, A)
@@ -1019,6 +1448,7 @@ def EnKF_analysis(E, Eo, hnoise, y, upd_a, stats=None, ko=None):
                 Y -= Tj @ Y
             w = dy@Y.T@T/N1
             E = mu + w@A + T@A
+            E = mu + T@A
 
     elif 'DEnKF' == upd_a:
         # Uses "Deterministic EnKF" (sakov'08)
@@ -1558,7 +1988,7 @@ def Newton_m(fun, deriv, x0, is_inverted=False,
 
 
 def hyperprior_coeffs(s, N, xN=1, g=0):
-    r"""Set EnKF-N inflation hyperparams.
+    """Set EnKF-N inflation hyperparams.
 
     The EnKF-N prior may be specified by the constants:
 

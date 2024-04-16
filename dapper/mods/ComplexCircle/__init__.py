@@ -8,6 +8,7 @@ import scipy
 import dapper.mods as modelling
 import dapper.tools as tools
 import pandas as pd
+from dapper.tools.seeding import set_seed
 
 #complex number 
 I = complex(0,1)
@@ -25,18 +26,27 @@ def rotate2d(theta, data, axis=-1):
                     
 
 #Dynamical model.
-def step(x,t,dt):
-    """ Step function if Cartesian coordinates are used. """
-    shape = np.shape(x)
-    x = np.reshape(x,(-1,2))
-    #Complex
-    polar = cartesian2polar(x)
-    dtheta = rate * polar[:,1]
-    #Convert back 
-    for n, dtheta1 in enumerate(dtheta):
-        x[n,:] =  rotation(dtheta1) @ x[n,:]
-    #Output
-    return np.reshape(x, shape)
+def step_factory(amplitude=0.0, period=50):
+    omega = 2*np.pi/period
+    dr = lambda t : amplitude*omega*np.cos(omega*t)
+    
+    def step(x,t,dt):
+        """ Step function if Cartesian coordinates are used. """
+        shape = np.shape(x)
+        x = np.reshape(x,(-1,2))
+        #Convert
+        polar = cartesian2polar(x)
+        #Scale
+        scale = 1.0 + dr(t) * dt / polar[:,0]
+        #Rotate
+        dtheta = rate * polar[:,1]
+        for n, dtheta1 in enumerate(dtheta):
+            x[n,:] =  rotation(dtheta1) @ (x[n,:] * scale[n])
+   
+        #Output
+        return np.reshape(x, shape)
+    
+    return step 
 
 #Initial conditions
 class PolarRotation(tools.randvars.RV):
@@ -81,7 +91,7 @@ class Rotation(tools.randvars.RV):
 X0 = Rotation(radius=1, stats=scipy.stats.uniform(-.1*np.pi,.1*np.pi))
  
 #Observation real part
-def create_obs_factory(ind, sig):  
+def create_obs_factory(ind, sig, distribution):  
     M = len(ind)
     
     def create_obs(ko):
@@ -93,11 +103,17 @@ def create_obs_factory(ind, sig):
             else:
                 return np.reshape(E[:,ind], (-1,M))
         
-        C = sig**2 * np.ones((M,))
+        if distribution=='normal':
+            C = sig**2 * np.ones((M,))
+            noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
+        elif distribution=='beta':
+            noise = tools.randvars.RV_beta(sig**2, lbounds=-1, ubounds=1, M=M)
+        
         Obs = {'M':M, 'model':sample, 'linear':sample,
-               'noise':tools.randvars.GaussRV(mu=0,C=C,M=M)}
+               'noise':noise}
     
         return modelling.Operator(**Obs)
+    
     return create_obs
 
 def create_obs_xy(ko):

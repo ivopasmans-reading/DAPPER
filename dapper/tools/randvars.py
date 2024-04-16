@@ -6,6 +6,8 @@ from struct_tools import NicePrint
 
 from dapper.tools.matrices import CovMat
 from dapper.tools.seeding import rng
+from scipy import stats
+from scipy.optimize import fsolve
 
 
 class RV(NicePrint):
@@ -84,7 +86,69 @@ class RV(NicePrint):
             raise KeyError
         assert self.M == E.shape[1]
         return E
-
+    
+    def add_sample(self, E):
+        return E + self.sample(np.size(E,0))
+    
+class RV_beta(RV):
+    """
+    Random variable from beta distribution. 
+    """
+    
+    def __init__(self, var, lbounds=0, ubounds=1, M=None):
+        if M is not None:
+            self.M = M
+        elif not isinstance(lbounds, (float,int,np.floating,np.integer)):
+            self.M = len(lbounds)
+        elif not isinstance(ubounds, (float,int,np.floating,np.integer)):
+            self.M = len(ubounds)
+        elif not isinstance(var, (float,int,np.floating,np.integer)):
+            self.M = len(var)
+            
+        var = var / (ubounds - lbounds)**2
+        if isinstance(var, (float,int,np.floating,np.integer)):
+            self.C = CovMat(var*np.ones(self.M), 'diag') 
+        else:
+            self.C = CovMat(var, 'diag') 
+        
+        self.to_unit = lambda x : (x - lbounds) / (ubounds - lbounds) 
+        self.from_unit = lambda x : (ubounds - lbounds) * x + lbounds
+    
+    def sample(self, N):
+        raise NotImplementedError("Beta distribution needs input values.")
+        
+    def add_sample(self, E):
+        E = self.to_unit(E)
+        E = np.minimum(np.maximum(E, 0.), 1.)
+        a,b = self.parms(E)
+        rv = stats.beta(a,b)
+        E = rv.rvs(np.shape(E))
+        return self.from_unit(E)
+        
+    def parms(self, mode):
+        shape = np.shape(mode)
+        a, b = [], []
+        
+        var  = self.C.diag[None,...] * np.ones((np.size(mode,0),1))
+        mode = np.reshape(mode, (-1,))
+        var = np.reshape(var, (-1,))
+        for mode1, var1 in zip(mode, var):
+            mode_var = lambda x : ((x[0]-1)/(x[0]+x[1]-2)-mode1, 
+                                   x[0]*x[1]/(x[0]+x[1])**2/(x[0]+x[1]+1)-var1)
+            a1, b1 = fsolve(mode_var, (2,2))
+            
+            if a1<1 or b1<1:
+                print('a, b, mode, var ',a1, b1, mode1, var1, mode_var((a1,b1)))
+                raise ValueError("Invalid beta parameters")
+            
+            a.append(a1)
+            b.append(b1)
+            
+        a = np.reshape(a, shape)
+        b = np.reshape(b, shape)
+        
+        return a, b
+    
 
 # TODO 4: improve constructor (treatment of arg cases is too fragile).
 class RV_with_mean_and_cov(RV):
