@@ -22,23 +22,25 @@ from sklearn import preprocessing
 import scipy
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/vae_B/test'
+FIG_DIR = '/home/ivo/Figures/vae/vae_obs/test'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima.keras'
 # Number of ensemble member
 Nens = 64
 dko, sigo = 10, .1
 
+sigo = np.deg2rad(5)
+
 if __name__ == '__main__' and FIG_DIR is not None:
     shutil.copyfile(__file__, os.path.join(FIG_DIR, 'training_climatology.py'))
 
 
-def run_model(K, dko, seed, amplitude=0.0):
+def run_model(K, dko, seed, obs_type, amplitude=0.0):
     Dyn = {'M': 2, 'model': circle.step_factory(amplitude=amplitude), 
            'linear': circle.step_factory(amplitude=amplitude), 'noise': 0}
 
     # Actual observation operator.
-    obs = circle.create_obs_factory([0], sigo, 'normal')
+    obs = circle.create_obs_factory([0], sigo, obs_type)
     Obs = {'time_dependent': obs}
 
     # Time steps
@@ -62,7 +64,8 @@ from matplotlib import pyplot as plt
 from scipy.stats import norm, rv_histogram
 
 #Generate climatology
-HMM0, xx0, _ = run_model(10000, 1, 1000, amplitude=0.0) 
+HMM0, xx0, _ = run_model(10000, 1, 1000, 'beta', amplitude=0.0) 
+
 
 # Create model
 hypermodel = vae.DenseVae()
@@ -76,13 +79,11 @@ hypermodel.fit(hp, model, xx0, verbose=True, shuffle=True)
 if MODEL_PATH is not None:
     model.save(MODEL_PATH)
 
-# Add model to HiddenMarkovModel
+# Add model to HiddenMarkovModellatent_dim = self.hp.values['latent_dim']
 vae_trans = eda.VaeTransform(hypermodel, hp, model)
 cycle_trans = eda.CyclingVaeTransform(hypermodel, hp, None)
 bkg_trans = eda.BackgroundVaeTransform(hypermodel, hp, model)
-
-error_sample = lambda E:  np.random.normal(scale=sigo, size=np.shape(E))
-inno_trans = eda.InnoVaeTransform(hypermodel, hp, model, 16384, error_sample)
+inno_trans = eda.InnoVaeTransform(hypermodel, hp, model, 4096, HMM0.Obs(0).noise.add_sample)
 
 # Sample encoder
 model.set_trainable=False
@@ -104,9 +105,11 @@ plotReconstruction.save()
 # %% Data assimilate
 
 importlib.reload(da)
+from copy import deepcopy
 
-HMM, xx, yy = run_model(1000, dko, 2000, amplitude=0.0)
-_, _, _ = run_model(1000, dko, 3000)
+HMM, xx, yy = run_model(dko, dko, 2000, 'beta', amplitude=0.0)
+HMM1, xx1, yy1 = run_model(dko, dko, 2000, 'normal', amplitude=0.0)
+_, _, _ = run_model(dko, dko, 3000, 'beta')
 
 factory = eda.EndaFactory() 
 
@@ -130,6 +133,11 @@ for xp in xps:
     print("Assimilating ",xp.name)
     xp.assimilate(HMM, xx, yy, liveplots=False)
     xp.HMM = HMM
+    
+for xp in xps:
+    print("Assimilating ",xp.name)
+    xp.assimilate(HMM1, xx1, yy1, liveplots=False)
+    xp.HMM1 = HMM1
 
 # %%
 

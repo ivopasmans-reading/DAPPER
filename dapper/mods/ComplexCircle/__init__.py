@@ -102,12 +102,23 @@ def create_obs_factory(ind, sig, distribution):
                 return np.reshape(E[ind], (M,))
             else:
                 return np.reshape(E[:,ind], (-1,M))
+            
+        def sample_angle(E):
+            if np.ndim(E)==1:
+                return np.reshape(np.arctan2(E[1],E[0]), (M,))
+            else:
+                return np.reshape(np.arctan2(E[:,1],E[:,0]), (-1,M))
         
         if distribution=='normal':
             C = sig**2 * np.ones((M,))
             noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
         elif distribution=='beta':
             noise = tools.randvars.RV_beta(sig**2, lbounds=-1, ubounds=1, M=M)
+        elif distribution=='angle':
+            C = sig**2 * np.ones((M,))
+            noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
+            
+            sample = sample_angle
         
         Obs = {'M':M, 'model':sample, 'linear':sample,
                'noise':noise}

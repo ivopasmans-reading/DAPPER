@@ -315,9 +315,6 @@ class VaeMultiBkg(VaeMulti):
     def alpha(self):
         return tf.constant(0.0)
 
-    
-    
-
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
 
@@ -421,8 +418,9 @@ class DenseVae(tuner.HyperModel):
         return model
     
     def build_inno(self, hp, model, obs_dim):
-        encoder = self._build_encoder_inno(model.encoder, obs_dim)
-        decoder = self._build_decoder_inno(model.decoder, obs_dim)
+        latent_dim = self.hp.values['latent_dim']
+        encoder = self._build_encoder_inno(obs_dim, 1)
+        decoder = self._build_decoder_inno(1, obs_dim)
         
         # Create the VAE
         model = VaeMulti([encoder], [decoder])
@@ -747,73 +745,61 @@ class DenseVae(tuner.HyperModel):
 
         return encoder, z_mean_model, z_var_model, z_sample_model
     
-    def _build_encoder_inno(self, encoder, obs_dim):
+    def _build_encoder_inno(self, obs_dim, latent_dim):
+        """ Encoder for innovations. """
         nodes = self.hp.get('no_nodes')
-        state_dim = encoder.layers[0].input_shape[0][1]
-        encoder.trainable = False
         
+        #Input
         input_layer = layers.Input(shape=(obs_dim,), name='d_input')
-        x = layers.Dense(nodes, name='Ht00d', trainable=True)(input_layer)
-        x = layers.LeakyReLU(.1, name='Ht00a')(x)
-        x = layers.Dense(nodes, name='Ht01d', trainable=True)(x)
-        x = layers.LeakyReLU(.1, name='Ht01a')(x)
-        x = layers.Dense(nodes, name='Ht02d', trainable=True)(x)
-        x = layers.LeakyReLU(.1, name='Ht02a')(x)
-        x = layers.Dense(nodes, name='Ht03d', trainable=True)(x)
-        #x = layers.Dense(state_dim, name='Ht02d', trainable=True)(x)
         
-        z_mean = x
-        lays  = [l for l in encoder.layers if 'mean' in l.name]
-        for layer in lays[1:]:
-            z_mean = layer(z_mean)
-            
-        z_log_var = x
-        lays  = [l for l in encoder.layers if 'var' in l.name]
-        for layer in lays[1:]:
-            z_log_var = layer(z_log_var)
+        #Mean 
+        d_mean = self._add_model_layers(input_layer, name='d_mean')
+        d_mean = layers.Dense(latent_dim, name='d_mean')(d_mean)
+        d_mean = self.scale_layer(d_mean)
         
-        z_sample = encoder.get_layer('z_sample')([z_mean, z_log_var])
+        # Var
+        d_log_var = self._add_model_layers(input_layer, 'd_log_var')
+        d_log_var = layers.Dense(latent_dim, name="d_log_var")(d_log_var)
+        d_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='d_var_rescale')(d_log_var)
+        
+        # Sample
+        d_sample = SamplingLayer(name='d_sample')([d_mean, d_log_var])
 
-        iencoder = keras.Model(input_layer, [z_mean, z_log_var, z_sample],
+        iencoder = keras.Model(input_layer, [d_mean, d_log_var, d_sample],
                                name='iencoder')
             
         return iencoder
 
-    def _build_decoder_inno(self, decoder, obs_dim):
-        input_layer = decoder.layers[0].input
-        nodes = self.hp.get('no_nodes')
+    def _build_decoder_inno(self, obs_dim, latent_dim):
+        """ Decoder for innovations. """
+        #Input
+        input_layer = layers.Input(shape=(latent_dim,), name='e_input')
         
-        decoder.trainable=False
-        #x_mean, x_log_var, x_sin, x_sample = decoder(input_layer)
-        name = decoder.get_layer('x_mean').parents[0]
-        x_mean = decoder.get_layer(name).output
+        #Mean 
+        e_mean = self._add_model_layers(input_layer, name='e_mean')
+        e_mean = layers.Dense(obs_dim, name='e_mean')(e_mean)
+        e_mean = self.scale_layer(e_mean)
         
-        name = decoder.get_layer('x_log_var').parents[0]
-        x_log_var = decoder.get_layer(name).output        
+        # Var
+        e_log_var = self._add_model_layers(input_layer, 'e_log_var')
+        e_log_var = layers.Dense(obs_dim, name="e_log_var")(e_log_var)
+        e_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='e_var_rescale')(e_log_var)
         
-        H_mean = layers.Dense(nodes, name='H_mean00d', trainable=True)(x_mean)
-        H_mean = layers.LeakyReLU(.1, name='H_mean00a')(H_mean)
-        H_mean = layers.Dense(nodes, name='H_mean01d', trainable=True)(H_mean)
-        H_mean = layers.LeakyReLU(.1, name='H_mean01a')(H_mean)
-        H_mean = layers.Dense(obs_dim, name='H_mean02d', trainable=True)(H_mean)
-        H_mean = layers.LeakyReLU(.1, name='H_mean02a')(H_mean)
-        H_mean = layers.Dense(obs_dim, name='H_mean03d', trainable=True)(H_mean)
+        #Rotatation (not used)
+        e_sin = tf.zeros_like(e_mean)
         
-        H_log_var = layers.Dense(nodes,name='H_log_var00d', trainable=True)(x_log_var)
-        H_log_var = layers.LeakyReLU(.1, name='H_log_var00a')(H_log_var)
-        H_log_var = layers.Dense(nodes,name='H_log_var01d', trainable=True)(H_log_var)
-        H_log_var = layers.LeakyReLU(.1, name='H_log_var01a')(H_log_var)
-        H_log_var = layers.Dense(obs_dim, name='H_log_var02d', trainable=True)(H_log_var)
-        H_log_var = layers.LeakyReLU(.1, name='H_log_var02a')(H_log_var)
-        H_log_var = layers.Dense(obs_dim, name='H_log_var03d', trainable=True)(H_log_var)
+        # Sample
+        e_sample = SamplingLayer(name='e_sample')([e_mean, e_log_var])
+
+        # Model 
+        idecoder = keras.Model(input_layer, [e_mean, e_log_var, e_sin, e_sample],
+                               name='idecoder')
         
-        perturbs = tf.random.normal(tf.shape(H_mean))
-        H_sample = H_mean + tf.exp(0.5*H_log_var) * perturbs
-        zeros = tf.zeros_like(H_mean)
-        
-        idecoder = keras.Model(input_layer, [H_mean, H_log_var, zeros, H_sample])        
         return idecoder 
-        
         
 
     def _build_decoder(self, state_dim, latent_dim, var_min=.04**2):

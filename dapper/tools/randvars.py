@@ -148,7 +148,6 @@ class RV_beta(RV):
         b = np.reshape(b, shape)
         
         return a, b
-    
 
 # TODO 4: improve constructor (treatment of arg cases is too fragile).
 class RV_with_mean_and_cov(RV):

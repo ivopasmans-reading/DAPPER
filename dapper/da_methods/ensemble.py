@@ -30,7 +30,7 @@ class EnProcessor:
     
     def __init__(self, **kwargs):
         """ Class constructor. """
-        pass 
+        self.options =kwargs
     
     def pre(self, k, ko, y, E, Y, D):
         """ Function to be called on background ensemble."""
@@ -69,6 +69,21 @@ class ControlCovariance(EnProcessor):
         Y = obs(E)
         Y = np.array(Y) - np.mean(Y, axis=0, keepdims=True)
         return E, Y, D
+    
+class AngleControlCovariance(EnProcessor):
+    
+    def pre(self, k, ko, y, E, Y, D):
+        obs = self.HMM.ObsNow
+        j   = complex(0,1)
+        Y   = np.exp(j * obs(E))
+        M   = np.prod(Y**(1/np.size(Y,0)), axis=0, keepdims=True)
+        Y   = Y/M
+        Y   = np.imag(np.log(Y))
+        
+        #Also do D. Might need to use AngleInno prior to this. 
+        D = np.imag(np.log(np.exp(j*D)))
+        
+        return E, Y, D        
 
 class Inno(EnProcessor):
     """ 
@@ -80,6 +95,21 @@ class Inno(EnProcessor):
         obs = self.HMM.ObsNow
         #Innovations
         D = np.mean(y[None,...] - obs(E), axis=0, keepdims=True) 
+        return E, Y, D
+    
+class AngleInno(EnProcessor):
+    """ 
+    Smallest error modulo 2pi. 
+    """
+    
+    def pre(self, k, ko, y, E, Y, D):
+        j = complex(0,1)
+        #observation operator
+        obs = self.HMM.ObsNow
+        #Innovations
+        D = np.exp(j*y[None,...]) / np.exp(j*obs(E))
+        D = np.prod(D**(1/np.size(D,0)), axis=0, keepdims=True)
+        D = np.imag(np.log(D))
         return E, Y, D
     
 class StochasticInno(Inno):
@@ -105,6 +135,10 @@ class StochasticInno(Inno):
         #Calculate innovations.
         D = y[None,...] - Eo     
         D = np.array(D)
+        
+        #Save innovation vectors. 
+        self.D = D
+        
         return E, Y, D
 
 class Inflator(EnProcessor):
@@ -437,15 +471,14 @@ class InnoVaeTransform(VaeTransform):
         D1  = self.HMM.ObsNow(E1)
         
         #Create innovations 
-        D   = D0 + self.error_sample(D0) - D1
+        D   = self.error_sample(D0) - D1
         
         #Rescale 
-        #IP layer = self.model.encoder.get_layer('encoder') 
         layer = self.model.encoder.get_layer('z_mean_rescale')
         _, _, Z = self.model.encoder(D)
         Zstd = np.std(Z, axis=0, keepdims=True)
         layer.kernel.assign(layer.kernel/Zstd)
-        
+
         #Recenter 
         _, _, Z = self.model.encoder(D)
         Zmean = np.mean(Z, axis=0)
@@ -1174,13 +1207,20 @@ class EndaFactory:
         
         if 'pertobs' in filter or 'etkf_d' in filter:
             processors += [StochasticInno(**self.options)]
+        elif 'angle' in filter:
+            processors += [AngleInno(**self.options)]
         else:
             processors += [Inno(**self.options)]  
             
         return processors 
             
     def create_Y_builder(self, processors):
-        processors += [ControlCovariance()] 
+        filter = self.options['filter']  
+        
+        if 'angle' in filter:
+            processors += [AngleControlCovariance()]
+        else:
+            processors += [ControlCovariance()] 
         #Create obs-controlcovariance 
         if 'VaeTransforms' in self.options:
             processors += self.options['VaeTransforms']     
