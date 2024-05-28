@@ -383,7 +383,7 @@ class CyclingVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, E, verbose=True) 
+        history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
         
 class BackgroundVaeTransform(VaeTransform):
     
@@ -411,7 +411,7 @@ class BackgroundVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, E, verbose=True) 
+        history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
         
 class InnoVaeTransform(VaeTransform):    
     
@@ -484,7 +484,7 @@ class InnoVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, D, verbose=True) 
+        history = self.hypermodel.fit(self.hp, self.model, D, verbose=False) 
         
         Dl = self.model.encoder(D)[-1]
         

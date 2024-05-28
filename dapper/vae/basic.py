@@ -13,14 +13,19 @@ import keras_tuner as tuner
 from tensorflow import keras
 from tensorflow.keras import layers
 import os
-import dill
+import dill, random
+import tensorboard
+
+LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
+tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
 
 # constant pi
 PI = tf.constant(np.pi)
 # clear
 tf.keras.saving.get_custom_objects().clear()
-#Small number 
+# Small number
 EPS = tf.constant(1e-6)
+
 
 def rotate(x, theta, axis=-1):
     x = np.swapaxes(x, axis, 0)
@@ -31,7 +36,15 @@ def rotate(x, theta, axis=-1):
     x = np.swapaxes(x, 0, axis)
     return x
 
+def reset_random_seeds():
+   os.environ['PYTHONHASHSEED']=str(0)
+   tf.random.set_seed(1)
+   keras.utils.set_random_seed(1)
+   np.random.seed(1)
+   random.seed(1)
+
 # %% Variational autoencoder based on dense neural network.
+
 
 @tf.keras.saving.register_keras_serializable(package="VAE")
 class SamplingLayer(layers.Layer):
@@ -41,8 +54,8 @@ class SamplingLayer(layers.Layer):
         mean, log_var = inputs
         batch = tf.shape(mean)[0]
         dim = tf.shape(mean)[1]
-        epsilon = tf.random.normal(shape=(batch, dim))
-        return mean + tf.exp(0.5 * log_var) * epsilon
+        epsilon = tf.random.normal(shape=(batch, dim)) 
+        return mean + tf.exp(0.5 * log_var) * epsilon  # IP
 
     def get_config(self):
         return super().get_config()
@@ -60,19 +73,24 @@ class VarScalingLayer(layers.Layer):
         super().__init__(**kwargs)
         self.source = source_layer
 
-    def call(self, inputs):     
-        #Create kernel
-        kernel = self.source.kernel 
-        x = inputs + tf.math.log(kernel)            
+    def call(self, inputs):
+        # Create kernel
+        kernel = self.source.kernel
+        x = inputs + tf.math.log(kernel)
         return x
 
     def get_config(self):
-        return super().get_config()
+        base_config = super().get_config()
+        config = {"source_layer" : keras.saving.serialize_keras_object(self.source)}
+        return {**base_config, **config}
 
     @classmethod
     def from_config(cls, config):
-        return cls(**config)
-    
+        source_layer = config.pop("source_layer")
+        source_layer = keras.saving.deserialize_keras_object(source_layer, safe_mode=False)
+        return cls(source_layer, **config)
+
+
 @tf.keras.saving.register_keras_serializable(package="VAE")
 class InvertScalingLayer(layers.Layer):
     """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
@@ -81,19 +99,24 @@ class InvertScalingLayer(layers.Layer):
         super().__init__(**kwargs)
         self.source = source_layer
 
-    def call(self, inputs):     
-        #Create kernel
-        kernel = tf.linalg.pinv(self.source.kernel) 
+    def call(self, inputs):
+        # Create kernel
+        kernel = tf.linalg.pinv(self.source.kernel)
         bias = self.source.bias
-        x = tf.matmul(inputs - bias, kernel)          
+        x = tf.matmul(inputs - bias, kernel)
         return x
 
     def get_config(self):
-        return super().get_config()
+        base_config = super().get_config()
+        config = {"source_layer" : keras.saving.serialize_keras_object(self.source)}
+        return {**base_config, **config}
 
     @classmethod
     def from_config(cls, config):
-        return cls(**config)
+        source_layer = config.pop("source_layer")
+        source_layer = keras.saving.deserialize_keras_object(source_layer, safe_mode=False)
+        return cls(source_layer, **config)
+
 
 class DiagCallback(keras.callbacks.Callback):
 
@@ -123,13 +146,14 @@ class VAE(keras.Model):
 
         self.l2_rotation = l2_rotation
         self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
-        self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
+        self.reconstruction_loss_tracker = keras.metrics.Mean(
+            name="reconstruction_loss")
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
         self.angle_loss_tracker = keras.metrics.Mean(name="angle_loss")
         self.z_M1_tracker = keras.metrics.Mean(name='z_M1')
         self.z_M2_tracker = keras.metrics.Mean(name='z_M2')
         self.diags = {'epoch': tf.Variable(0.0, trainable=False)}
-        self.x_var_min = tf.constant(.05**2) #IP 
+        self.x_var_min = tf.constant(.05**2)  # IP
 
     @property
     def metrics(self):
@@ -151,9 +175,9 @@ class VAE(keras.Model):
     @classmethod
     def from_config(cls, config):
         encoder = config.pop('encoder')
-        encoder = tf.keras.Model.from_config(encoder)
+        encoder = keras.saving.deserialize_keras_object(encoder, safe_mode=False)
         decoder = config.pop('decoder')
-        decoder = tf.keras.Model.from_config(decoder)
+        decoder = keras.saving.deserialize_keras_object(decoder, safe_mode=False)
         return cls(encoder, decoder, **config)
 
     @property
@@ -172,7 +196,7 @@ class VAE(keras.Model):
 
     def mc_reconstruction_loss(self, data, z, alpha):
         """ Reconstruction loss estimated from Monte-Carlo approximation. """
-      
+
         z_mean, z_log_var, _ = self.encoder(data)
         x_mean, x_log_var, x_sin, _ = self.decoder(z)
         # Turn error into its principal component
@@ -184,7 +208,7 @@ class VAE(keras.Model):
         log_var = (1-alpha) * x_log_var + alpha * log_var0
 
         # -2 log p(z|x) [with regularization]
-        loss  = log_var
+        loss = log_var
         loss += tf.square(error) / (tf.exp(log_var) + EPS)
         loss += tf.square(x_log_var - log_var)
 
@@ -232,7 +256,8 @@ class VAE(keras.Model):
             kl_loss = self.kl_loss(data)
             for _ in range(self.mc_samples):
                 _, _, z = self.encoder(data)
-                reconstruction_loss += self.mc_reconstruction_loss(data, z) * mc
+                reconstruction_loss += self.mc_reconstruction_loss(
+                    data, z) * mc
                 angle_loss += self.mc_angle_loss(data, z) * mc
 
             alpha = tf.math.sigmoid(0.2*(self.diags['epoch']-10.0))
@@ -261,16 +286,35 @@ class VAE(keras.Model):
 
         return losses
 
+@tf.keras.saving.register_keras_serializable(package="VAE")
 class VaeMulti(VAE):
 
     def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=0.0,
                  **kwargs):
-
+        
         super().__init__(encoder[0], decoder[0], mc_samples,
                          l2_rotation, **kwargs)
         self.encoders = encoder
         self.decoders = decoder
         
+    def get_config(self):
+        return {**super().get_config(),
+                'encoders': keras.saving.serialize_keras_object(self.encoders),
+                'decoders': keras.saving.serialize_keras_object(self.decoders),
+                'mc_samples': self.mc_samples,
+                'l2_rotation': self.l2_rotation}
+
+    @classmethod
+    def from_config(cls, config):
+        encoder = config.pop('encoders')
+        encoder = keras.saving.deserialize_keras_object(encoder, safe_mode=False)
+        decoder = config.pop('decoders')
+        decoder = keras.saving.deserialize_keras_object(decoder, safe_mode=False)
+        mc_samples = config.pop('mc_samples')
+        l2_rotation = config.pop('l2_rotation')
+        print('CONFIG ', config)
+        return cls(encoder, decoder, mc_samples, l2_rotation)
+
     def alpha(self):
         return tf.exp(-0.1*self.diags['epoch'])
 
@@ -279,10 +323,11 @@ class VaeMulti(VAE):
             _, _, z = self.encoder(data)
             alpha = self.alpha()
             kl_loss = tf.reduce_mean(self.kl_loss(data))
-            rec_loss = tf.reduce_mean(self.mc_reconstruction_loss(data, z, alpha))
+            rec_loss = tf.reduce_mean(
+                self.mc_reconstruction_loss(data, z, alpha))
             angle_loss = tf.reduce_mean(self.mc_angle_loss(data, z))
             total_loss = rec_loss + kl_loss + angle_loss
-            
+
             z_M1 = tf.reduce_mean(z, axis=0)
             z_M2 = tf.reduce_mean(tf.square(z), axis=0)
 
@@ -310,10 +355,12 @@ class VaeMulti(VAE):
 
         return losses
 
+
 class VaeMultiBkg(VaeMulti):
-    
+
     def alpha(self):
         return tf.constant(0.0)
+
 
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
@@ -360,7 +407,7 @@ class DenseVae(tuner.HyperModel):
                         tf.keras.callbacks.TerminateOnNaN()]
 
         # Callback that keeps track of epoch.
-        self.diag = [DiagCallback(**model.diags)]
+        self.diag = [DiagCallback(**model.diags),tensorboard_callback]
 
         # Compile before use and return.
         self.compile(model)
@@ -377,9 +424,9 @@ class DenseVae(tuner.HyperModel):
                                         kernel_initializer='identity',
                                         trainable=True,
                                         kernel_constraint=keras.constraints.NonNeg())
-        encoder = self._build_encoder_multi(hp.get('state_dim'), 
+        encoder = self._build_encoder_multi(hp.get('state_dim'),
                                             hp.get('latent_dim'))
-        decoder = self._build_decoder_multi(hp.get('state_dim'), 
+        decoder = self._build_decoder_multi(hp.get('state_dim'),
                                             hp.get('latent_dim'))
 
         # Build actual model.
@@ -389,7 +436,7 @@ class DenseVae(tuner.HyperModel):
             l2_rotation = 0.0
 
         # Create the VAE
-        model = VaeMultiBkg(encoder, decoder, 
+        model = VaeMultiBkg(encoder, decoder,
                             mc_samples=self.hp.get('mc_samples'),
                             l2_rotation=l2_rotation)
 
@@ -416,12 +463,12 @@ class DenseVae(tuner.HyperModel):
         self.compile(model)
 
         return model
-    
+
     def build_inno(self, hp, model, obs_dim):
         latent_dim = self.hp.values['latent_dim']
         encoder = self._build_encoder_inno(obs_dim, 1)
         decoder = self._build_decoder_inno(1, obs_dim)
-        
+
         # Create the VAE
         model = VaeMulti([encoder], [decoder])
 
@@ -471,6 +518,7 @@ class DenseVae(tuner.HyperModel):
         fit_args['callbacks'] = fit_args['callbacks']
         fit_args['callbacks'] += self.lr + self.stopper + self.diag
 
+        keras.utils.set_random_seed(1000)
         return model.fit(*args, **fit_args)
 
     def create_tree(self, model):
@@ -502,7 +550,7 @@ class DenseVae(tuner.HyperModel):
         self.create_tree(model.decoder)
         encoder_depths = np.unique([l.depth for l in model.encoder.layers])
         decoder_depths = np.unique([l.depth for l in model.decoder.layers])
-        
+
         if self.hp.get('training') == 'offline':
             model.encoder.trainable = True
             model.decoder.trainable = True
@@ -516,35 +564,35 @@ class DenseVae(tuner.HyperModel):
             model.encoder.get_layer('z_mean_rescale').trainable = True
             model.encoder.get_layer('z_var_rescale').trainable = True
             model.decoder.get_layer('sampling_rescale').trainable = True
-            
+
         elif self.hp.get('training') == 2:
             model.encoder.trainable = False
             model.decoder.trainable = False
-        
+
             maxdepth = np.max(encoder_depths)
-            lays = (l for l in model.encoder.layers if l.depth>=.5*maxdepth )
+            lays = (l for l in model.encoder.layers if l.depth >= .5*maxdepth)
             for l in lays:
-                l.trainable = True 
-            lays = (l for l in model.decoder.layers if l.depth<.5*maxdepth)
+                l.trainable = True
+            lays = (l for l in model.decoder.layers if l.depth < .5*maxdepth)
             for l in lays:
-                l.trainable = True 
-            
+                l.trainable = True
+
             model.encoder.get_layer('z_mean_rescale').trainable = False
             model.encoder.get_layer('z_var_rescale').trainable = False
             model.decoder.get_layer('sampling_rescale').trainable = False
-            
+
         elif self.hp.get('training') == 3:
             model.encoder.trainable = False
             model.decoder.trainable = False
-        
+
             maxdepth = np.max(encoder_depths)
-            lays = (l for l in model.encoder.layers if l.depth<=.5*maxdepth )
+            lays = (l for l in model.encoder.layers if l.depth <= .5*maxdepth)
             for l in lays:
-                l.trainable = True 
-            lays = (l for l in model.decoder.layers if l.depth>.5*maxdepth)
+                l.trainable = True
+            lays = (l for l in model.decoder.layers if l.depth > .5*maxdepth)
             for l in lays:
-                l.trainable = True 
-            
+                l.trainable = True
+
             model.encoder.get_layer('z_mean_rescale').trainable = False
             model.encoder.get_layer('z_var_rescale').trainable = False
             model.decoder.get_layer('sampling_rescale').trainable = False
@@ -663,16 +711,16 @@ class DenseVae(tuner.HyperModel):
     def _add_model_layers(self, input_layer, name):
         hidden_dim = self.hp.get('hidden_dim')
         nodes = self.hp.get('no_nodes')
-        
-        
+
         x = input_layer
         for n in range(self.hp.get('no_layers')):
             l1 = tf.keras.regularizers.L1(self.hp.get('l1'))
-            x = layers.Dense(nodes, name=f'hidden{n:02d}_{name}_dense',
+            x  = layers.Dense(nodes, name=f'hidden{n:02d}_{name}_dense',
                              kernel_regularizer=l1,
                              kernel_initializer='he_normal',
                              )(x)
-            x = layers.LeakyReLU(0.1, name=f'hidden{n:02d}_{name}_activation')(x)
+            x  = layers.LeakyReLU(0.1, 
+                                  name=f'hidden{n:02d}_{name}_activation')(x)
 
         return x
 
@@ -738,69 +786,68 @@ class DenseVae(tuner.HyperModel):
         # Different models
         z_mean_model = keras.Model(input_layer, z_mean, name='encoder_mean')
         z_var_model = keras.Model(input_layer, z_log_var, name='encoder_var')
-        z_sample_model = keras.Model(input_layer, z_sample, 
+        z_sample_model = keras.Model(input_layer, z_sample,
                                      name='encoder_sample')
         encoder = keras.Model(input_layer, [z_mean, z_log_var, z_sample],
                               name='encoder')
 
         return encoder, z_mean_model, z_var_model, z_sample_model
-    
+
     def _build_encoder_inno(self, obs_dim, latent_dim):
         """ Encoder for innovations. """
         nodes = self.hp.get('no_nodes')
-        
-        #Input
+
+        # Input
         input_layer = layers.Input(shape=(obs_dim,), name='d_input')
-        
-        #Mean 
+
+        # Mean
         d_mean = self._add_model_layers(input_layer, name='d_mean')
         d_mean = layers.Dense(latent_dim, name='d_mean')(d_mean)
         d_mean = self.scale_layer(d_mean)
-        
+
         # Var
         d_log_var = self._add_model_layers(input_layer, 'd_log_var')
         d_log_var = layers.Dense(latent_dim, name="d_log_var")(d_log_var)
         d_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
                                     name='d_var_rescale')(d_log_var)
-        
+
         # Sample
         d_sample = SamplingLayer(name='d_sample')([d_mean, d_log_var])
 
         iencoder = keras.Model(input_layer, [d_mean, d_log_var, d_sample],
                                name='iencoder')
-            
+
         return iencoder
 
     def _build_decoder_inno(self, obs_dim, latent_dim):
         """ Decoder for innovations. """
-        #Input
+        # Input
         input_layer = layers.Input(shape=(latent_dim,), name='e_input')
-        
-        #Mean 
+
+        # Mean
         e_mean = self._add_model_layers(input_layer, name='e_mean')
         e_mean = layers.Dense(obs_dim, name='e_mean')(e_mean)
         e_mean = self.scale_layer(e_mean)
-        
+
         # Var
         e_log_var = self._add_model_layers(input_layer, 'e_log_var')
         e_log_var = layers.Dense(obs_dim, name="e_log_var")(e_log_var)
         e_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
                                     name='e_var_rescale')(e_log_var)
-        
+
         #Rotatation (not used)
         e_sin = tf.zeros_like(e_mean)
-        
+
         # Sample
         e_sample = SamplingLayer(name='e_sample')([e_mean, e_log_var])
 
-        # Model 
+        # Model
         idecoder = keras.Model(input_layer, [e_mean, e_log_var, e_sin, e_sample],
                                name='idecoder')
-        
-        return idecoder 
-        
+
+        return idecoder
 
     def _build_decoder(self, state_dim, latent_dim, var_min=.04**2):
         """ Build the decoder. """
@@ -840,7 +887,7 @@ class DenseVae(tuner.HyperModel):
 
         # Input processing.
         input_layer = keras.Input(shape=(latent_dim,), name='z_input')
-        trans_input = InvertScalingLayer(self.scale_layer,  
+        trans_input = InvertScalingLayer(self.scale_layer,
                                          trainable=False,
                                          name='sampling_rescale')(input_layer)
 
@@ -853,15 +900,15 @@ class DenseVae(tuner.HyperModel):
         x_log_var = self._add_model_layers(trans_input, 'x_log_var')
         x_log_var = layers.Dense(state_dim, name="x_log_var")(x_log_var)
 
-        # sin
+        # sin IP
         x_sin = tf.zeros_like(x_mean[:, 0:1], name='x_sin')
         with self.hp.conditional_scope('use_rotation', [True]):
-            #x_sin = layers.Lambda(lambda x: tf.stop_gradient(x))(trans_input)
+            x_sin = layers.Lambda(lambda x: tf.stop_gradient(x))(trans_input)
             x_sin = self._add_model_layers(x_sin, 'x_sin')
-            x_sin = layers.Dense(state_dim-1, name="x_sin", activation='tanh',
-                                 kernel_initializer='zeros',
-                                 bias_initializer='zeros',
-                                 trainable=False)(x_sin)
+        x_sin = layers.Dense(state_dim-1, name="x_sin", activation='tanh',
+                             kernel_initializer='zeros',
+                             bias_initializer='zeros',
+                             trainable=False)(x_sin)
 
         # Sample
         x_sample = SamplingLayer(name='x_sample')([x_mean, x_log_var])
