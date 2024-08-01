@@ -169,3 +169,6 @@ dapper/mods/QG/f90/prms_*\.txt
 tmp
 *.tf
 *.pb
+
+gpuenv
+*.png
