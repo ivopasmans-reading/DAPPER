@@ -484,7 +484,7 @@ class InnoVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, D, verbose=False) 
+        history = self.hypermodel.fit(self.hp, self.model, D, verbose=True) 
         
         Dl = self.model.encoder(D)[-1]
         

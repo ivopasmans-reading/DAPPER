@@ -28,6 +28,7 @@ CONFIDENCE_LEVEL = 0.9
 mpl.rcParams['lines.linewidth'] = 2
 mpl.rcParams['font.weight'] = 'bold'
 mpl.rcParams['axes.labelweight'] = 'bold'
+mpl.rcParams['font.size'] = 12
 
 
 def filter_dict(key, data):
@@ -90,7 +91,12 @@ def best_funcs():
     def rfunc(E): return np.linalg.norm(E, axis=-1)
     def tfunc(E): return np.mod(np.rad2deg(
         np.arctan2(yfunc(E), xfunc(E))), 360)
-    return [xfunc, yfunc, rfunc, tfunc]
+
+    def pfunc(E): return E[..., 0]+complex(0, 1)*E[..., 1]
+    return [xfunc, yfunc, rfunc, tfunc, pfunc]
+
+
+BEST_FUNC_NAMES = ['x', 'y', 'radius', 'angle', 'position']
 
 
 def smallest_angle(E, xx):
@@ -205,6 +211,7 @@ class BasePlots:
         def calc_ticks(step, lims):
             steps = np.array([np.floor(lims[0] / step),
                               np.ceil(lims[-1] / step)])
+            print('STEPS',steps)
             ticks = np.arange(steps[0], steps[1]+1)*step
             return ticks
 
@@ -327,7 +334,6 @@ class BasePlots:
                 os.mkdir(self.fig_dir)
             self.fig.savefig(self.fig_path, dpi=400, format='png')
 
-
 class ConfidencePlots(BasePlots):
     """ 
     Plot y as function of x for different series with confidence interval. 
@@ -385,7 +391,7 @@ class ConfidencePlots(BasePlots):
 
 # %% Classes for processing of primal data.
 
-
+import warnings
 class CRPS:
     """ 
     Class to calculate the Continuous Rank Probability Score. 
@@ -427,10 +433,16 @@ class CRPS:
         diff = np.diff(ens, axis=0)
         # Average width.
         mask = diff > 0.0
-        diff = np.nanmean(self.weights*diff, axis=-1, where=mask)
-        w = np.nanmean(self.weights + np.zeros_like(mask), axis=-1,
-                       where=mask)
-        diff = np.where(~np.isnan(w), diff/w, 0.0)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(action='ignore', message='Mean of empty slice')
+            diff = np.nanmean(self.weights*diff, axis=-1, where=mask)
+            w = np.nanmean(self.weights + np.zeros_like(mask), axis=-1,
+                           where=mask)
+            
+        isnan = np.isnan(w)
+        diff[isnan] = 0.0
+        diff[~isnan] = diff[~isnan]/w[~isnan]
+        #diff = np.where(~np.isnan(w), diff/w, 0.0)
 
         return diff
 
@@ -577,6 +589,8 @@ class Histogram:
             return np.arange(-.05, 1.451, .1)
         elif name == 'angle':
             return np.arange(0, 360.1, 15)
+        elif name == 'position':
+            return Histogram.get_bins('radius')
         else:
             return np.arange(-1.45, 1.451, .1)
 
@@ -585,15 +599,24 @@ class Histogram:
         truth = truth * np.ones((1, self.N, 1))
         # Bin to calculate the probability density.
         bins = self.get_bins(self.name)
+        bin_range = np.max(bins) - np.min(bins)
+
+        if self.name == 'position':
+            self.ens = np.abs(self.ens-truth)
+            truth = np.abs(truth)
+            bins = [bins, bins]
+        else:
+            bins = [bins, bins]
+
         H = np.histogram2d(truth.ravel(), self.ens.ravel(), bins, density=True)
         # Centre of bins.
-        bin_range = np.max(bins) - np.min(bins)
-        bins = .5*bins[:-1] + .5*bins[1:]
+        for n in range(2):
+            bins[n] = .5*bins[n][:-1] + .5*bins[n][1:]
         data = xr.DataArray(H[0],
-                            dims={'true '+self.name: len(bins),
-                                  'ensemble '+self.name: len(bins)},
-                            coords={'true '+self.name: ('true '+self.name, bins),
-                                    'ensemble '+self.name: ('ensemble '+self.name, bins),
+                            dims={'true '+self.name: len(bins[0]),
+                                  'ensemble '+self.name: len(bins[1])},
+                            coords={'true '+self.name: ('true '+self.name, bins[0]),
+                                    'ensemble '+self.name: ('ensemble '+self.name, bins[1]),
                                     },
                             name=self.name,
                             attrs={'bin range': bin_range})
@@ -670,7 +693,7 @@ def calculate_stat(stat, xp, xx, seed, stage='analysis', **kwargs):
     xx = xx[xp.HMM.tseq.kko]
     results = xr.Dataset()
 
-    for func, varname in zip(best_funcs(), ['x', 'y', 'radius', 'angle']):
+    for func, varname in zip(best_funcs(), BEST_FUNC_NAMES):
         # Truth
         x = func(xx)[..., None]
         # Ensemble
@@ -693,6 +716,57 @@ def calculate_stat(stat, xp, xx, seed, stage='analysis', **kwargs):
         results = xr.merge([results, result])
 
     return results
+
+
+class ReconstructionPlot(BasePlots):
+    """
+    Plot decoder and encoder distributions.
+    """
+
+    def __init__(self, fig_dir):
+        self.fig_dir = fig_dir
+
+    def add_samples(self, xx, zz):
+        self.xx, self.zz = xx, zz
+
+    def plot_circle(self, ax, radius=1):
+        theta = np.linspace(0, 2*np.pi, 100)
+        ax.plot(radius * np.cos(theta), radius * np.sin(theta), '-',
+                color=(.7, .7, .7))
+
+    def plot(self, fig_name='reconstruction_plot'):
+        self.fig_name = fig_name
+        self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
+        self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
+                                 bottom=.1, top=.94)
+
+        # Plot xx
+        ax = self.axes[0]
+        self.plot_circle(ax)
+        ax.plot(self.xx[:, 0], self.xx[:, 1], 'ko', markersize=.5)
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_title('Climatology state')
+
+        # Plot latent
+        ax = self.axes[1]
+        z = np.linspace(-4, 4, 8*10)
+        histo = scipy.stats.rv_histogram(np.histogram(self.zz, bins=z))
+        z = .5*(z[1:]+z[:-1])
+        norm = scipy.stats.norm(loc=np.mean(self.zz), scale=np.std(self.zz))
+        ax.plot(z, norm.pdf(z), 'k-')
+        ax.plot(z, histo.pdf(z), 'b-')
+
+        ax.set_xlim(-4, 4)
+        ax.set_title('Climatology latent')
+        ax.set_xlabel('z')
+        ax.set_ylabel('prob(z)')
+
+        for ax in self.axes:
+            ax.grid()
+
 
 # %% Classes to generate plots.
 
@@ -794,6 +868,72 @@ class ProbDensityPlots(BasePlots):
             ax.grid('on')
 
 
+class ErrorProbDensityPlots(ProbDensityPlots):
+    """ Plot probability density position error as function of true radius."""
+
+    def __init__(self, fig_dir, data):
+        super().__init__(fig_dir, data)
+        self.data = data
+        self.variables = [key for key in self.data.keys()]
+
+
+    def plot_scatter_density(self, fig_name='error_radius'):
+        # Number of experiments
+        N_xp = len(self.data.coords['experiment'])
+        # Conditional probability
+        data = self.calculate_condition_prob()
+
+        # Create figure
+        plt.close('all')
+        self.fig_name = fig_name
+        N_xp = data.coords['experiment'].shape[0]
+        subshape = (2,3)
+        
+        self.fig, self.axes = plt.subplots(subshape[0], subshape[1], 
+                                           figsize=np.flip(np.array([2.5,2.5])*np.array(subshape))
+                                           )
+        self.axes = np.reshape(self.axes, subshape)
+        self.fig.subplots_adjust(wspace=.3, hspace=.3, left=.1, right=.98,
+                                 bottom=.2, top=.92)
+
+        #colors for all 
+        im, variable = {}, 'position'
+        probs = np.array(data[variable].data)
+        probs = np.where(probs>0., np.log10(probs), np.nan)
+        levels = self.nice_ticks((np.nanmin(probs), np.nanmax(probs)), max_ticks=11)
+        levels = 10**levels
+
+        # Plot each prob. plots
+        for xp, ax in zip(np.array(data.coords['experiment']), np.ravel(self.axes)):
+            # Select data for this experiment and this variable.
+            data1 = data[variable].sel(experiment=xp)
+            # Bin centres.
+            y, x = np.meshgrid(data1['true '+variable],
+                               data1['ensemble '+variable])
+            # Plot
+            norm = mpl.colors.LogNorm(np.min(levels),np.max(levels))
+            im[ax] = ax.pcolormesh(x, y, np.array(data1), cmap='afmhot_r',
+                                   norm=norm)
+            
+            #Layout 
+            ax.set_title(xp)
+
+        # Set layout axes.
+        for ax in self.axes.ravel():
+            self.set_nice_xlim(ax, max_ticks=5, minlim=0.0)
+            self.set_nice_ylim(ax, max_ticks=5, minlim=0.0)
+        for ax in self.axes[-1,:]:
+            ax.set_xlabel('Radius')
+        for ax in self.axes[:,0]:
+            ax.set_ylabel('Error position')
+        for ax in self.axes[-1,:]:
+            bbox = ax.get_position()
+            cax = self.fig.add_axes([bbox.x0, .06, bbox.width, .02])
+            cbar = plt.colorbar(im[self.axes[0,0]], cax, orientation='horizontal',
+                                extend='min')
+        for ax in self.axes.ravel():
+            ax.grid('on')
+
 class CrpsPlots(BasePlots):
     """ 
     Plot CRPS, reliability and resolution. 
@@ -823,9 +963,9 @@ class CrpsPlots(BasePlots):
         # Create figure
         plt.close('all')
         self.fig_name = fig_name
-        self.fig, self.axes = plt.subplots(2, 2, figsize=(8.5, 6))
-        self.fig.subplots_adjust(wspace=.14, hspace=.24, left=.08, right=.98,
-                                 bottom=.14, top=.92)
+        self.fig, self.axes = plt.subplots(2, 2, figsize=(8.5, 7))
+        self.fig.subplots_adjust(wspace=.14, hspace=.24, left=.08, right=.96,
+                                 bottom=.18, top=.94)
 
         keys = list(self.data.keys())
         xps = np.array(self.data.coords['experiment'])
@@ -840,19 +980,19 @@ class CrpsPlots(BasePlots):
             ax.set_xlim(-.5, len(xps)-.5)
             ax.grid()
         for ax in self.axes[-1]:
-            ax.xaxis.set_tick_params(rotation=30)
+            ax.xaxis.set_tick_params(rotation=40)
             ax.set_xticklabels(xps)
 
-        self.axes[-1, 0].legend(loc='upper right', framealpha=1.0)
+        self.axes[-1, 0].legend(loc='upper left', framealpha=1.0)
 
     def plot_crps1(self, ax, data):
         xps = np.array(data.coords['experiment'])
 
         # Plot
         self.labels = ['crps', 'reliability', 'resolution']
-        width = np.linspace(-.5,.5,len(self.labels)+1)*.6
+        width = np.linspace(-.5, .5, len(self.labels)+1)*.6
         width = .5*width[1:]+.5*width[:-1]
-        for n,style in enumerate(self.styles()):
+        for n, style in enumerate(self.styles()):
             varname = style[0]
             data1 = data.sel(variable=varname)
             data1 = self.calculate_mean(data1)
@@ -860,14 +1000,61 @@ class CrpsPlots(BasePlots):
             mean = np.array(data1['mean'].data)
             low = mean - np.array(data1['low'].data)
             high = np.array(data1['high'].data) - mean
-            
-            #ax.errorbar(range(len(data1.coords['experiment'])), mean,
+
+            # ax.errorbar(range(len(data1.coords['experiment'])), mean,
             #            np.array([low, high]), linewidth=0.0, elinewidth=2.0,
             #            color=style[1], marker=style[3], label=varname, capsize=3)
             ax.bar(range(len(data1.coords['experiment'])) + width[n],
-                   mean, yerr=np.array([low,high]), label=varname,
-                   width = np.diff(width[:2]))
+                   mean, yerr=np.array([low, high]), label=varname,
+                   width=np.diff(width[:2]))
 
+class SingleCrpsPlots(CrpsPlots):
+    
+    def plot_crps(self, fig_name='crps_single'):
+        """ 
+        Plot CRPS, reliability and resolution. 
+        """
+
+        # Create figure
+        plt.close('all')
+        self.fig_name = fig_name
+        self.fig, self.axes = plt.subplots(1, 1, figsize=(8.5, 6))
+        self.axes = np.reshape(self.axes,(1,1))
+        self.fig.subplots_adjust(wspace=.14, hspace=.24, left=.08, right=.98,
+                                 bottom=.14, top=.9)
+
+        ax = self.axes[0,0]
+        self.labels = np.array(self.data['x'].coords['experiment'])
+        width = np.linspace(-.5, .5, len(self.labels)+1)*.6
+        width = .5*width[1:]+.5*width[:-1]
+        
+        keys = list(self.data.keys())[:4]
+        for n, style in enumerate(self.styles()):
+            mean, low, high = [],[],[]
+            for key in keys:
+                data1 = self.data[key].sel(variable='crps', experiment=style[0])
+                if key=='angle':
+                    data1 = np.deg2rad(data1)
+                data1 = self.calculate_mean(data1)
+                
+                mean.append(float(data1['mean'].data))
+                low.append(mean[-1] - float(data1['low'].data))
+                high.append(float(data1['high'].data) - mean[-1])
+                
+            ax.bar(width[n] + range(1,len(keys)+1),
+                   mean, yerr=np.array([low, high]), label=style[0],
+                   width=np.diff(width[:2])) 
+
+        ax.set_title('crps')        
+        keys[-1] += ' [rad]'
+        for ax in self.axes.ravel():
+            self.set_nice_ylim(ax, include=[0.0], minlim=0.0)
+            ax.set_xticklabels(keys)
+            ax.set_xticks(range(1,len(keys)+1))
+            ax.grid()
+
+        self.axes[-1, 0].legend(loc='upper left', framealpha=1.0, ncol=2)
+    
 class TaylorPlots(BasePlots):
     """ 
     Plot Taylor diagrams of mean values.
@@ -879,23 +1066,24 @@ class TaylorPlots(BasePlots):
 
     def calculate_mean(self, data, weights):
         EPS = 1e-6
-        func = lambda x,y,axis: np.sum(x,axis=axis)/(EPS+np.sum(y,axis=axis))
-        data  = (np.array(data.data),np.array(weights.data))
-        data  = np.reshape(data, (2,-1))
-        boot  = bootstrap(data,
-                          func, n_resamples=BOOT_SAMPLES,
-                          confidence_level=CONFIDENCE_LEVEL,
-                          vectorized=True, axis=0, paired=True)
-        result = func(*data,axis=0)
-        
+        def func(x, y, axis): return np.sum(
+            x, axis=axis)/(EPS+np.sum(y, axis=axis))
+        data = (np.array(data.data), np.array(weights.data))
+        data = np.reshape(data, (2, -1))
+        boot = bootstrap(data,
+                         func, n_resamples=BOOT_SAMPLES,
+                         confidence_level=CONFIDENCE_LEVEL,
+                         vectorized=True, axis=0, paired=True)
+        result = func(*data, axis=0)
+
         return result, boot.confidence_interval.low, boot.confidence_interval.high
 
     def cor2rad(self, cor):
         return .5*np.pi*(1-cor)
-    
+
     def rad2cor(self, rad):
         return (.5*np.pi-rad) / (.5*np.pi)
-    
+
     def rmse(self, cor, std, std0):
         return np.sqrt(std**2+std0**2-2*std*std0*cor)
 
@@ -903,39 +1091,39 @@ class TaylorPlots(BasePlots):
         # Create figure
         plt.close('all')
         self.fig_name = fig_name
-        self.fig, self.axes = plt.subplots(1,4, figsize=(8, 3.2),
+        self.fig, self.axes = plt.subplots(1, 4, figsize=(8, 3.8),
                                            subplot_kw={'projection': 'polar'})
-        self.axes = np.reshape(self.axes,(1,-1))
+        self.axes = np.reshape(self.axes, (1, -1))
         self.fig.subplots_adjust(wspace=0.2, hspace=0.08, bottom=.15,
-                                 left=.05, right=.95,top=.9)
+                                 left=.05, right=.95, top=.9)
         self.handles = []
 
-        #Plot output experiments. 
+        # Plot output experiments.
         for ax, key in zip(self.axes.ravel(), list(self.data.keys())):
             self.plot_taylor2(ax, self.data[key])
             ax.set_title(key)
 
-        #Add legend. 
+        # Add legend.
         lax = self.fig.add_axes([.5, .01, .9, .1])
         lax.axis('off')
-        lax.legend(handles=self.handles, ncols=4, framealpha=1.0,
+        lax.legend(handles=self.handles, ncols=3, framealpha=1.0,
                    loc='lower center', bbox_to_anchor=[0.0, 0.0])
 
-        #Layout axes.
+        # Layout axes.
         for ax in self.axes.flatten():
             ax.set_xlim((self.cor2rad(1.05), self.cor2rad(-.05)))
-            ax.set_xticks(self.cor2rad(np.linspace(0,1,6)))
+            ax.set_xticks(self.cor2rad(np.linspace(0, 1, 6)))
             ax.xaxis.set_major_formatter(
                 lambda x, pos: np.round(self.rad2cor(x), 1))
-           
-            self.set_nice_ylim(ax, include=[0.0],max_ticks=5)
+
+            self.set_nice_ylim(ax, include=[0.0], max_ticks=5)
             ax.xaxis.set_label_coords(.5, -0.15)
             ax.set_xlabel('')
-        
-        #Axes labels
-        for ax in self.axes[-1,:]:
+
+        # Axes labels
+        for ax in self.axes[-1, :]:
             ax.set_xlabel('standard deviation')
-        for ax in self.axes[:,0]:
+        for ax in self.axes[:, 0]:
             ax.set_ylabel('correlation')
 
     def interval(self, data):
@@ -952,53 +1140,58 @@ class TaylorPlots(BasePlots):
 
         self.handles = []
         for n, style in enumerate(self.styles()):
-            ssEE = data.sel(experiment=style[0], variable='ensemble', 
+            ssEE = data.sel(experiment=style[0], variable='ensemble',
                             metric='variance')
             ssTT = data.sel(experiment=style[0],
                             variable='truth', metric='variance')
-            covET = data.sel(experiment=style[0], variable='ensemble', 
+            covET = data.sel(experiment=style[0], variable='ensemble',
                              metric='covariance')
-            ssET = data.sel(experiment=style[0], variable='ensemble', 
+            ssET = data.sel(experiment=style[0], variable='ensemble',
                             metric='variance')**.5
             ssET *= data.sel(experiment=style[0],
-                            variable='truth', metric='variance')**.5
+                             variable='truth', metric='variance')**.5
 
-            #Take expectation value
+            # Take expectation value
             sTT = np.array(self.calculate_mean(ssTT, np.ones_like(ssTT)))**.5
             sEE = np.array(self.calculate_mean(ssEE, np.ones_like(ssEE)))**.5
             corET = np.array(self.calculate_mean(covET, ssET))
-            print('ET',style[0],corET, sTT, sEE)
-            #Plot point
+            print('ET', style[0], corET, sTT, sEE)
+            # Plot point
             corET = self.cor2rad(corET)
-            
-            #Truth 
+
+            # Truth
             cor = np.linspace(-.05, 1.05, 100)
             r = np.ones_like(cor) * sTT[0]
             h, = ax.plot(self.cor2rad(cor), r, 'k-', label='truth')
-            
-            #Plot
+
+            # Plot
             h, = ax.plot(corET[0], sEE[0], style[3], label=style[0],
                          color=style[1])
             self.handles.append(h)
 
-            #Plot rmse
+            # Plot rmse
             rticks = self.nice_ticks(ax.get_ylim(), max_ticks=5, include=[0])
-            r,cor = np.meshgrid(np.linspace(0,max(rticks),100),
-                                np.linspace(-.05,1.05,100))
-            rmse = self.rmse(cor,r,sTT[0])
-            levels = self.nice_ticks(rmse,max_ticks=12,include=[0.0])
-            contour = ax.contour(self.cor2rad(cor),r,rmse,
-                                 levels=levels,colors=[(0,0,0)],linewidths=1,
+            r, cor = np.meshgrid(np.linspace(0, max(rticks), 100),
+                                 np.linspace(-.05, 1.05, 100))
+            rmse = self.rmse(cor, r, sTT[0])
+            levels = self.nice_ticks(rmse, max_ticks=12, include=[0.0])
+            contour = ax.contour(self.cor2rad(cor), r, rmse,
+                                 levels=levels, colors=[(0, 0, 0)], linewidths=1,
                                  linestyles=['--'])
-            ax.clabel(contour,levels[::2], fontsize=10)
-            
-            #Plot point
+            ax.clabel(contour, levels[::2], fontsize=10)
+
+            # Plot point
             ax.errorbar(corET[0], sEE[0],
-                        xerr=np.array([[corET[0]-min(corET)], 
+                        xerr=np.array([[corET[0]-min(corET)],
                                        [max(corET)-corET[0]]]),
                         yerr=np.array([[sEE[0]-min(sEE)],
                                        [max(sEE)-sEE[0]]]),
                         label=style[0], color=style[1], marker=style[3])
+
+            print('xerr', np.array([[corET[0]-min(corET)],
+                                   [max(corET)-corET[0]]]))
+            print('yerr', np.array([[sEE[0]-min(sEE)],
+                                   [max(sEE)-sEE[0]]]))
 
     def plot_taylor1(self, ax, data):
 
@@ -1027,7 +1220,219 @@ class TaylorPlots(BasePlots):
             self.handles.append(h)
 
 
+class CirclePlot(BasePlots):
+    """ 
+    Plot analysis and forecast ensemble with circle.
+    """
+
+    def __init__(self, fig_dir):
+        self.fig_dir = fig_dir
+        self.labels = set()
+        self.ens_for, self.ens_ana, self.tracks, self.obs = {}, {}, {}, {}
+        self.latent_tracks, self.latent_for, self.latent_ana = {}, {}, {}
+        self.latent_dim = 0
+
+    def add_ens_for(self, label, times, E):
+        # Store data in dict.
+        self.ens_for[label] = {'time': times,
+                               'data': E, 'style': ('Forecast', 'b')}
+        self.labels = self.labels.union([label])
+
+    def add_ens_ana(self, label, times, E):
+        # Store data in dict.
+        self.ens_ana[label] = {'time': times,
+                               'data': E, 'style': ('Analysis', 'g')}
+        self.labels = self.labels.union([label])
+
+    def add_latent_for(self, label, times, E):
+        self.latent_dim = np.size(E, -1)
+        self.latent_for[label] = {'time': times,
+                                  'data': E, 'style': ('Forecast', 'b')}
+        self.labels = self.labels.union([label])
+
+    def add_latent_ana(self, label, times, E):
+        self.latent_ana[label] = {'time': times,
+                                  'data': E, 'style': ('Analysis', 'g')}
+        self.labels = self.labels.union([label])
+
+    def add_track_latent(self, label, times, x):
+        self.latent_tracks[label] = {'time': times, 'data': x,
+                                     'style': ('Truth', 'k')}
+        self.labels = self.labels.union([label])
+
+    def add_track(self, label, times, x):
+        self.tracks[label] = {'time': times, 'data': x,
+                              'style': ('Truth', 'k')}
+        self.labels = self.labels.union([label])
+
+    def add_obs(self, times, y):
+        self.obs = {'time': times, 'data': y}
+
+    def plot_circle(self, ax, radius=1):
+        theta = np.linspace(0, 2*np.pi, 100)
+        ax.plot(radius * np.cos(theta), radius * np.sin(theta), '-',
+                color=(.7, .7, .7))
+
+    def add_handle(self, handle):
+        if handle.get_label() in (h.get_label() for h in self.handles):
+            return
+        else:
+            self.handles.append(handle)
+
+    def assign_styles(self):
+        styles = self.styles()
+        for style in styles:
+            if style[0] in self.tracks:
+                self.tracks[style[0]]['style'] = style
+            if style[0] in self.ens_for:
+                self.ens_for[style[0]]['style'] = style
+            if style[0] in self.ens_ana:
+                self.ens_ana[style[0]]['style'] = style
+            if style[0] in self.latent_ana:
+                self.latent_ana[style[0]]['style'] = style
+            if style[0] in self.latent_for:
+                self.latent_for[style[0]]['style'] = style
+
+    def plot_ensemble(self, ax, time, data):
+        for key, value in data.items():
+            mask = value['time'] == time
+
+            # Plot forecast ensemble
+            ax.plot(value['data'][mask][0, :, 0],
+                    value['data'][mask][0, :, 1], 'o',
+                    alpha=.2, color=value['style'][1],
+                    label=value['style'][0], markeredgewidth=0)
+
+            # Plot mean
+            m = np.mean(value['data'][mask], axis=1)
+            h, = ax.plot(m[0, 0], m[0, 1], 'o',
+                         alpha=1., color=value['style'][1],
+                         label=value['style'][0])
+
+            self.add_handle(h)
+
+    def plot_pdf(self, ax, time, data):
+        z = np.linspace(-2, 2, 100)
+
+        for key, value in data.items():
+            mask = value['time'] == time
+            data = np.sort(value['data'][mask].flatten())
+            z = np.linspace(0, 1, len(data))
+
+            z1 = np.linspace(0, 1, 16)
+            data1 = np.interp(z1, z, data)
+            Dz1 = (z1[1:]-z1[:-1])/(data1[1:]-data1[:-1])
+            Ddata1 = .5*data1[1:]+.5*data1[:-1]
+
+            norm = scipy.stats.norm(loc=np.mean(data),
+                                    scale=np.std(data, ddof=1))
+            z = np.linspace(-2, 2, 100)
+            ax.plot(z, norm.pdf(z), color=value['style'][1], linestyle='--')
+            ax.plot(Ddata1, Dz1, color=value['style'][1], linestyle='-')
+
+    def plot_time(self, time, fig_name='trajectory'):
+
+        if not hasattr(self, 'axes') or self.axes is None:
+            plt.close('all')
+            self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
+            self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
+                                     bottom=.1, top=.94)
+            # self.assign_styles()
+        else:
+            for ax in self.axes.flatten():
+                ax.clear()
+
+        self.fig_name = fig_name
+        self.handles = []
+        self.plot_circle(self.axes[0])
+
+        for key, value in self.tracks.items():
+            mask = value['time'] == time
+            h, = self.axes[0].plot(value['data'][mask][0, 0],
+                                   value['data'][mask][0, 1],
+                                   'o', alpha=1., color=value['style'][1],
+                                   label=value['style'][0])
+            self.plot_circle(self.axes[0], np.hypot(value['data'][mask][0, 0],
+                                                    value['data'][mask][0, 1]))
+
+        # Plot forecast
+        self.plot_ensemble(self.axes[0], time, self.ens_for)
+        # Plot analysis
+        self.plot_ensemble(self.axes[0], time, self.ens_ana)
+        # Plot latent space
+        if self.latent_dim == 1:
+            self.plot_pdf(self.axes[1], time, self.latent_for)
+            self.plot_pdf(self.axes[1], time, self.latent_ana)
+            self.axes[1].set_xlabel('latent')
+            self.axes[1].set_ylabel('PDF')
+        elif self.latent_dim == 2:
+            self.plot_ensemble(self.axes[1], time, self.latent_for)
+            self.plot_ensemble(self.axes[1], time, self.latent_ana)
+            self.axes[1].set_xlabel('latent_1')
+            self.axes[1].set_ylabel('latent_2')
+
+        # Add observation
+        mask = self.obs['time'] == time
+
+        self.axes[0].plot(np.array([1, 1])*self.obs['data']
+                          [mask][0], np.array([-2, 2]), 'k--')
+
+        # Add truth
+        for key, value in self.tracks.items():
+            mask = value['time'] == time
+            h, = self.axes[0].plot(value['data'][mask][0, 0],
+                                   value['data'][mask][0, 1],
+                                   'o', alpha=1., color=value['style'][1],
+                                   label=value['style'][0])
+            self.add_handle(h)
+
+        ax = self.axes[0]
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_xlim(-2., 2.)
+        ax.set_ylim(-2., 2.)
+        ax.set_aspect(1)
+
+        ax = self.axes[1]
+        self.set_nice_xlim(ax, lims=[-2, 2])
+        self.set_nice_ylim(ax, minlim=0)
+
+        for ax in self.axes.flatten():
+            ax.grid()
+            ax.legend(handles=self.handles, loc='upper left')
+            ax.set_title('Time {:5d}'.format(time))
+
+    def animate_time(self, times, fig_name='movie_time', fps=4):
+        """ 
+        Create animation of ensemble. 
+        """
+        fig, ax = plt.subplots(1, 1)
+
+        if self.fig_dir is not None:
+            tmp_dir = os.path.join(self.fig_dir, fig_name)
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir)
+            os.mkdir(tmp_dir)
+
+            print('Printing figures.')
+            for it, t in enumerate(times):
+                fig_name1 = os.path.join(tmp_dir, 'frame_{:04d}'.format(it)+'.png')
+                self.plot_time(t, fig_name=fig_name1)
+                self.save()
+
+            print('Compiling figures into animation.')
+            fmt = os.path.join(tmp_dir, 'frame_%04d'+'.png')
+            fmt = '\"'+fmt+'\"'
+            file_path = os.path.join(self.fig_dir, fig_name+'.mp4')
+            file_path = '\"'+file_path+'\"'
+            print('FILEPATH ',file_path)
+            cmd = (f'ffmpeg -f image2 -r {fps} -i {fmt} -vcodec libx264 -y '
+                   f'-profile:v high444 -refs 16 -crf 0 -preset ultrafast {file_path}')
+            os.system(cmd)
+            # shutil.rmtree(tmp_dir)
+
 # %% Needs revision
+
 
 class EnsStatsPlots(BasePlots):
     """ 
@@ -1077,7 +1482,7 @@ class EnsStatsPlots(BasePlots):
         xp_names = [xp.name for xp in self.xps]
         results = []
 
-        for func, varname in zip(self.best_funcs(), ['x', 'y', 'radius', 'angle']):
+        for func, varname in zip(self.best_funcs(), BEST_FUNC_NAMES):
             xx = func(self.truth)[times]
             xx = xx[None, ...]
 
@@ -1107,7 +1512,7 @@ class EnsStatsPlots(BasePlots):
         times = self.HMM.tseq.kko
 
         results = []
-        for func, varname in zip(self.best_funcs(), ['x', 'y', 'radius', 'angle']):
+        for func, varname in zip(self.best_funcs(), BEST_FUNC_NAMES):
             xx = func(self.truth)[times]
             xx = xx[None, ...]
 
@@ -2085,245 +2490,6 @@ class PrincipalPlots(BasePlots):
             cov1 = np.reshape(data1[:4], (2, 2))
             add_ellipse(r1, theta1, cov1)
 
-# %% Plot climate distribution
-
-
-class ReconstructionPlot(BasePlots):
-
-    def __init__(self, fig_dir):
-        self.fig_dir = fig_dir
-
-    def add_samples(self, xx, zz):
-        self.xx, self.zz = xx, zz
-
-    def plot_circle(self, ax, radius=1):
-        theta = np.linspace(0, 2*np.pi, 100)
-        ax.plot(radius * np.cos(theta), radius * np.sin(theta), '-',
-                color=(.7, .7, .7))
-
-    def plot(self, fig_name='reconstruction_plot'):
-        self.fig_name = fig_name
-        self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
-        self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
-                                 bottom=.1, top=.94)
-
-        # Plot xx
-        ax = self.axes[0]
-        self.plot_circle(ax)
-        ax.plot(self.xx[:, 0], self.xx[:, 1], 'ko', markersize=.5)
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_xlim(-1.5, 1.5)
-        ax.set_ylim(-1.5, 1.5)
-        ax.set_title('Climatology state')
-
-        # Plot latent
-        ax = self.axes[1]
-        z = np.linspace(-4, 4, 8*10)
-        histo = scipy.stats.rv_histogram(np.histogram(self.zz, bins=z))
-        z = .5*(z[1:]+z[:-1])
-        norm = scipy.stats.norm(loc=np.mean(self.zz), scale=np.std(self.zz))
-        ax.plot(z, norm.pdf(z), 'k-')
-        ax.plot(z, histo.pdf(z), 'b-')
-
-        ax.set_xlim(-4, 4)
-        ax.set_title('Climatology latent')
-        ax.set_xlabel('z')
-        ax.set_ylabel('prob(z)')
-
-        for ax in self.axes:
-            ax.grid()
-
-
-# %% 2D plot of circle
-
-
-class CirclePlot(BasePlots):
-
-    def __init__(self, fig_dir):
-        self.fig_dir = fig_dir
-        self.labels = set()
-        self.ens_for, self.ens_ana, self.tracks, self.obs = {}, {}, {}, {}
-        self.latent_tracks, self.latent_for, self.latent_ana = {}, {}, {}
-        self.latent_dim = 0
-
-    def add_ens_for(self, label, times, E):
-        # Store data in dict.
-        self.ens_for[label] = {'time': times, 'data': E}
-        self.labels = self.labels.union([label])
-
-    def add_ens_ana(self, label, times, E):
-        # Store data in dict.
-        self.ens_ana[label] = {'time': times, 'data': E}
-        self.labels = self.labels.union([label])
-
-    def add_latent_for(self, label, times, E):
-        self.latent_dim = np.size(E, -1)
-        self.latent_for[label] = {'time': times, 'data': E}
-        self.labels = self.labels.union([label])
-
-    def add_latent_ana(self, label, times, E):
-        self.latent_ana[label] = {'time': times, 'data': E}
-        self.labels = self.labels.union([label])
-
-    def add_track_latent(self, label, times, x):
-        self.latent_tracks[label] = {'time': times, 'data': x}
-        self.labels = self.labels.union([label])
-
-    def add_track(self, label, times, x):
-        self.tracks[label] = {'time': times, 'data': x}
-        self.labels = self.labels.union([label])
-
-    def add_obs(self, times, y):
-        self.obs = {'time': times, 'data': y}
-
-    def plot_circle(self, ax, radius=1):
-        theta = np.linspace(0, 2*np.pi, 100)
-        ax.plot(radius * np.cos(theta), radius * np.sin(theta), '-',
-                color=(.7, .7, .7))
-
-    def add_handle(self, handle):
-        if handle.get_label() in (h.get_label() for h in self.handles):
-            return
-        else:
-            self.handles.append(handle)
-
-    def assign_styles(self):
-        styles = self.styles()
-        for style in styles:
-            if style[0] in self.tracks:
-                self.tracks[style[0]]['style'] = style
-            if style[0] in self.ens_for:
-                self.ens_for[style[0]]['style'] = style
-            if style[0] in self.ens_ana:
-                self.ens_ana[style[0]]['style'] = style
-            if style[0] in self.latent_ana:
-                self.latent_ana[style[0]]['style'] = style
-            if style[0] in self.latent_for:
-                self.latent_for[style[0]]['style'] = style
-
-    def plot_ensemble(self, ax, time, data):
-        for key, value in data.items():
-            mask = value['time'] == time
-
-            # Plot forecast ensemble
-            ax.plot(value['data'][mask][0, :, 0],
-                    value['data'][mask][0, :, 1], 'o',
-                    alpha=.2, color=value['style'][1],
-                    label=value['style'][0], markeredgewidth=0)
-
-            # Plot mean
-            m = np.mean(value['data'][mask], axis=1)
-            h, = ax.plot(m[0, 0], m[0, 1], 'o',
-                         alpha=1., color=value['style'][1],
-                         label=value['style'][0])
-
-            self.add_handle(h)
-
-    def plot_pdf(self, ax, time, data):
-        z = np.linspace(-2, 2, 100)
-
-        for key, value in data.items():
-            mask = value['time'] == time
-            data = np.sort(value['data'][mask].flatten())
-            z = np.linspace(0, 1, len(data))
-
-            z1 = np.linspace(0, 1, 16)
-            data1 = np.interp(z1, z, data)
-            Dz1 = (z1[1:]-z1[:-1])/(data1[1:]-data1[:-1])
-            Ddata1 = .5*data1[1:]+.5*data1[:-1]
-
-            norm = scipy.stats.norm(loc=np.mean(data),
-                                    scale=np.std(data, ddof=1))
-            z = np.linspace(-2, 2, 100)
-            ax.plot(z, norm.pdf(z), color=value['style'][1], linestyle='--')
-            ax.plot(Ddata1, Dz1, color=value['style'][1], linestyle='-')
-
-    def plot_time(self, time, fig_name='trajectory'):
-
-        if not hasattr(self, 'axes') or self.axes is None:
-            plt.close('all')
-            self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
-            self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
-                                     bottom=.1, top=.94)
-            self.assign_styles()
-        else:
-            for ax in self.axes.flatten():
-                ax.clear()
-
-        self.fig_name = fig_name
-        self.handles = []
-        self.plot_circle(self.axes[0])
-
-        # Plot forecast
-        self.plot_ensemble(self.axes[0], time, self.ens_for)
-        # Plot analysis
-        self.plot_ensemble(self.axes[0], time, self.ens_ana)
-        # Plot latent space
-        if self.latent_dim == 1:
-            self.plot_pdf(self.axes[1], time, self.latent_for)
-            self.plot_pdf(self.axes[1], time, self.latent_ana)
-            self.axes[1].set_xlabel('latent')
-            self.axes[1].set_ylabel('PDF')
-        elif self.latent_dim == 2:
-            self.plot_ensemble(self.axes[1], time, self.latent_for)
-            self.plot_ensemble(self.axes[1], time, self.latent_ana)
-            self.axes[1].set_xlabel('latent_1')
-            self.axes[1].set_ylabel('latent_2')
-
-        # Add observation
-        mask = self.obs['time'] == time
-        self.axes[0].plot(np.array([1, 1])*self.obs['data']
-                          [mask][0], np.array([-2, 2]), 'k--')
-
-        # Add truth
-        for key, value in self.tracks.items():
-            mask = value['time'] == time
-            h, = self.axes[0].plot(value['data'][mask][0, 0],
-                                   value['data'][mask][0, 1],
-                                   'o', alpha=1., color=value['style'][1],
-                                   label=value['style'][0])
-            self.add_handle(h)
-
-        ax = self.axes[0]
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_xlim(-2., 2.)
-        ax.set_ylim(-2., 2.)
-        ax.set_aspect(1)
-
-        ax = self.axes[1]
-        self.set_nice_xlim(ax, lims=[-2, 2])
-        self.set_nice_ylim(ax, minlim=0)
-
-        for ax in self.axes.flatten():
-            ax.grid()
-            ax.legend(handles=self.handles, loc='upper left')
-            ax.set_title('Time {:5d}'.format(time))
-
-    def animate_time(self, times, fig_name='movie_time', fps=30):
-        """ 
-        Create animation of ensemble. 
-        """
-        fig, ax = plt.subplots(1, 1)
-
-        if self.fig_dir is not None:
-            tmp_dir = os.path.join(self.fig_dir, 'tmp')
-            os.mkdir(tmp_dir)
-
-            print('Printing figures.')
-            for it, t in enumerate(times):
-                fig_name1 = os.path.join('tmp', 'frame_{:04d}'.format(it))
-                self.plot_time(t, fig_name=fig_name1)
-                self.save()
-
-            print('Compiling figures into animation.')
-            fmt = os.path.join(tmp_dir, 'frame_%04d')
-            file_path = os.path.join(self.fig_dir, fig_name+'.mp4')
-            cmd = (f'ffmpeg -f image2 -r {fps} -i {fmt} -vcodec libx264 -y '
-                   f'-profile:v high444 -refs 16 -crf 0 -preset ultrafast {file_path}')
-            os.system(cmd)
-            shutil.rmtree(tmp_dir)
 
 # %%
 

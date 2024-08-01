@@ -29,7 +29,7 @@ import keras
 import xarray as xr
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/exp01'
+FIG_DIR = '/home/ivo/Figures/vae/exp02'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
 # Number of ensemble member
@@ -40,13 +40,13 @@ if __name__ == '__main__' and FIG_DIR is not None:
     shutil.copyfile(__file__, os.path.join(FIG_DIR, 'experiment.py'))
 
 
-def run_model(K, dko, seed, obs_type='normal', amplitude=0.0, sigo=.1):
+def run_model(K, dko, seed, obs_type='normal', amplitude=0.3, sigo=.1):
     """
     Function that creates the model for this experiment
     """
 
-    Dyn = {'M': 2, 'model': circle.step_factory(amplitude=amplitude),
-           'linear': circle.step_factory(amplitude=amplitude), 'noise': 0}
+    Dyn = {'M': 2, 'model': circle.spiral_factory(amplitude=amplitude),
+           'linear': circle.spiral_factory(amplitude=amplitude), 'noise': 0}
 
     # Actual observation operator.
     obs = circle.create_obs_factory([0], sigo, obs_type)
@@ -98,76 +98,6 @@ class VaeExperiment:
         with open(self.filepath,'rb') as stream:
             self.data = dill.load(stream)
 
-#%% CalibrateNo
-
-class CalibrateNo(VaeExperiment):
-    """ Compare error ETKF_D to ETKF. """
-    
-    def __init__(self, N=1, filepath=None):
-        self.N = N
-        self.data = None
-        self.factory = eda.EndaFactory()
-        
-        if filepath is None:
-            self.filepath = os.path.join(FIG_DIR,'CalibrateNo')
-        else:
-            self.filepath = filepath
-            
-    def run(self, dko=5):
-        "Repeat experiment several times"
-        for seed in range(1000, 1000+self.N*100, 100):
-            self.run1(dko, seed)
-
-    def run1(self, dko, seed):
-        "Calculate results 1 experiment"
-        HMM, xx, yy = run_model(1000, dko, seed)
-        _, _, _ = run_model(1000, dko, seed+50)
-        
-        datas = xr.Dataset()
-        
-        def run_xp(xp, No):
-            xp.HMM = HMM
-            plotCRPS = plots.EnsStatsPlots(FIG_DIR)
-            plotCRPS.add_truth(HMM, xx)
-            xp.assimilate(HMM, xx, yy, liveplots=False)
-            plotCRPS.add_xp(xp)
-            
-            crps, rmse = plotCRPS.calculate_crps(), plotCRPS.calculate_rmse()
-            data = xr.merge([crps, rmse])
-            data = data.expand_dims({'seed':1,'N_innovations':1})
-            data = data.assign_coords(seed=('seed',[seed]),
-                                      N_innovations=('N_innovations',[No]))
-            return data
-        
-        N_inno = 2**np.arange(0,5) * Nens
-        for No in N_inno:
-            xp = self.factory.build(Nens, 'ETKF_D', No=No, name=f'ETKF_D')
-            data = run_xp(xp, No)
-            
-            if self.data is None:
-                self.data = data
-            else:
-                self.data = self.data.merge(data)
-            
-        xp = self.factory.build(Nens, 'Sqrt svd', name='ETKF', rot=False )   
-        data = run_xp(xp, N_inno[0])
-        for No in N_inno:
-            data['N_innovations'] = [No] 
-            self.data = self.data.merge(data)
-             
-        xp = self.factory.build(Nens, 'Sqrt svd', name='rotated ETKF', rot=True)   
-        data = run_xp(xp, N_inno[0])
-        for No in N_inno:
-            data['N_innovations'] = [No] 
-            self.data = self.data.merge(data)  
-        
-            
-exp = CalibrateNo(N=100)
-exp.run(dko=1)
-plot = plots.ConfidencePlots(FIG_DIR)
-plot.set_axes_labels('N_innovations','experiment','seed')
-plot.plot_rms(exp.data['rmse'].sel({'variable':'position'}))
-plot.save()
 
 #%% Generate climatology
 
@@ -261,7 +191,6 @@ class XpsClass:
         self.names = ['no DA', 'ETKF', 'single-transfer', 'double-transfer',
                       'double-clima']
         self.names = ['no DA','ETKF','single-transfer','single-clima']
-        self.names += ['double-clima','double-transfer']
         self.hp =  clima.hp 
         self.hypermodel = clima.hypermodel
         self.model = clima.model 
@@ -311,10 +240,10 @@ class XpsClass:
         
         return xp 
 
-class StaticExperiment(VaeExperiment):
+class SpiralExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle. """
     
-    def __init__(self, N, dko, save_name='static.pkl'):
+    def __init__(self, N, dko, save_name='spiral.pkl'):
         self.dko = dko 
         self.Nclima = max(1,int(np.sqrt(N)))
         self.N = int(N / self.Nclima)
@@ -418,20 +347,21 @@ class StaticExperiment(VaeExperiment):
             os.remove(self.filepath)
             
 #Run the experiment.         
-exp = StaticExperiment(49, 10)
+exp = SpiralExperiment(49, 10)
 exp.load()
 exp.run()
 
-#%% Plot output statistics.
+#%% Plot output statistics. 
 
 #Remove faulty 1200<=seed<1300
 def filter_data(data):
     seeds = data.coords['seed']
     seeds = [s for s in seeds if s<1200 or s>=1300]
-    return data.sel(seed=seeds) 
+    return data.sel(seed=seeds)
+
 
 for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
-    plot_data = filter_data(data['histogram'])
+    plot_data = filter_data(data['histogram'])    
     plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
     plotHist.plot_scatter_density('scatter_'+stage)
     plotHist.save()
@@ -445,22 +375,12 @@ for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
     plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
     plotHist.plot_taylor('taylor_'+stage)
     plotHist.save()
-    
-    plot_data = filter_data(data['crps'])
-    plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-    plotHist.plot_crps('crps_single_'+stage)
-    plotHist.save()
-    
-    plot_data = filter_data(data['crps'])
-    plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-    plotHist.plot_crps('crps_single_'+stage)
-    plotHist.save()
 
 #%% Generate animation 
 
 def plot_movie(experiments, run_time, dko, No=Nens*4):
     climas = iter(ClimaExperiment(0.0))
-    for n in range(1):
+    for n in range(3):
         clima  = climas.__next__()
     
     #Create new run. 
@@ -480,9 +400,9 @@ def plot_movie(experiments, run_time, dko, No=Nens*4):
         circle = plots.CirclePlot(FIG_DIR)
         circle.add_track(xp.name, xp.HMM.tseq.tt, xx)
         circle.add_obs(xp.HMM.tseq.tto, yy)
-        circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f) 
+        circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f)
         circle.add_ens_ana(xp.name, xp.HMM.tseq.tto, xp.stats.E.a)
-        circle.animate_time(xp.HMM.tseq.tto, fig_name='movie_'+xp.name)
+        circle.animate_time(xp.HMM.tseq.tto, fig_name='movie3_'+xp.name)
         
     
-plot_movie(['no DA','ETKF','single-clima','single-transfer','double-clima','double-transfer'], 500, 10)
+plot_movie(['ETKF','single-transfer','single-clima'], 500, 10)

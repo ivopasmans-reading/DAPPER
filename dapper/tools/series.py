@@ -115,7 +115,7 @@ class StatPrint(NicePrint):
     """Set `NicePrint` options suitable for stats."""
 
     printopts = dict(
-        excluded=NicePrint.printopts["excluded"]+["HMM", "LP_instance"],
+        excluded=NicePrint.printopts["excluded"].union(["HMM", "LP_instance"]),
         ordering="linenumber",
         reverse=True,
         indent=2,
@@ -158,7 +158,7 @@ def monitor_setitem(cls):
 
     if issubclass(cls, NicePrint):
         cls.printopts['excluded'] = \
-                cls.printopts.get('excluded', []) + ['were_changed']
+                cls.printopts.get('excluded', []).union(['were_changed'])
 
     return cls
 

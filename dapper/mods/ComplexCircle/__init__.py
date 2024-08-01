@@ -48,6 +48,50 @@ def step_factory(amplitude=0.0, period=50):
     
     return step 
 
+def spiral_factory(amplitude=0.0, period=500):
+    omega = 2*np.pi/period
+    dr = lambda t : amplitude / period
+    
+    def step(x,t,dt):
+        """ Step function if Cartesian coordinates are used. """
+        shape = np.shape(x)
+        x = np.reshape(x,(-1,2))
+        #Convert
+        polar = cartesian2polar(x)
+        #Scale
+        scale = 1.0 + dr(t) * dt / polar[:,0]
+        #Rotate
+        dtheta = rate * polar[:,1]
+        for n, dtheta1 in enumerate(dtheta):
+            x[n,:] =  rotation(dtheta1) @ (x[n,:] * scale[n])
+   
+        #Output
+        return np.reshape(x, shape)
+    
+    return step 
+
+def uhlenbeck_factory(sig=0.0, friction=0.0):
+    
+    def step(x,t,dt):
+        """ Step function if Cartesian coordinates are used. """
+        shape = np.shape(x)
+        x = np.reshape(x,(-1,2))
+        #Convert
+        polar = cartesian2polar(x)
+        #Ornstein-Uhlenbeck process
+        #log(r) = np.log(r) - friction * np.log(r) * dt + sig * np.sqrt(dt) * W 
+        W = np.random.normal()
+        scale = polar[:,0]**(-friction * dt) * np.exp(sig * np.sqrt(dt) * W)
+        #Rotate
+        dtheta = rate * polar[:,1]
+        for n, dtheta1 in enumerate(dtheta):
+            x[n,:] =  rotation(dtheta1) @ (x[n,:] * scale[n])
+   
+        #Output
+        return np.reshape(x, shape)
+    
+    return step 
+
 #Initial conditions
 class PolarRotation(tools.randvars.RV):
     """
@@ -109,16 +153,40 @@ def create_obs_factory(ind, sig, distribution):
             else:
                 return np.reshape(np.arctan2(E[:,1],E[:,0]), (-1,M))
         
-        if distribution=='normal':
+        if 'normal' in distribution:
             C = sig**2 * np.ones((M,))
             noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
-        elif distribution=='beta':
+        elif 'beta' in distribution:
             noise = tools.randvars.RV_beta(sig**2, lbounds=-1, ubounds=1, M=M)
-        elif distribution=='angle':
+        elif 'angle' in distribution:
             C = sig**2 * np.ones((M,))
             noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
-            
             sample = sample_angle
+        else:
+            raise Exception(f"distribution {distribution} is unknown")
+        
+        Obs = {'M':M, 'model':sample, 'linear':sample,
+               'noise':noise}
+    
+        return modelling.Operator(**Obs)
+    
+    return create_obs
+
+def create_obs_factory_func(func, sig):  
+    M = 1
+    
+    def create_obs(ko):
+        """ Create time-dependent observation operator. """
+        
+        def sample(E):
+            if np.ndim(E)==1:
+                return np.reshape(func(E), (M,))
+            else:
+                return np.reshape([func(e) for e in E], (-1,M))
+            
+        
+        C = sig**2 * np.ones((M,))
+        noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
         
         Obs = {'M':M, 'model':sample, 'linear':sample,
                'noise':noise}

@@ -22,7 +22,7 @@ tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
 # constant pi
 PI = tf.constant(np.pi)
 # clear
-tf.keras.saving.get_custom_objects().clear()
+tf.keras.utils.get_custom_objects().clear()
 # Small number
 EPS = tf.constant(1e-6)
 
@@ -42,11 +42,13 @@ def reset_random_seeds():
    keras.utils.set_random_seed(1)
    np.random.seed(1)
    random.seed(1)
+   
+print('GPU name: ', tf.config.experimental.list_physical_devices('GPU'))
 
 # %% Variational autoencoder based on dense neural network.
 
 
-@tf.keras.saving.register_keras_serializable(package="VAE")
+@tf.keras.utils.register_keras_serializable(package="VAE")
 class SamplingLayer(layers.Layer):
     """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
 
@@ -65,7 +67,7 @@ class SamplingLayer(layers.Layer):
         return cls(**config)
 
 
-@tf.keras.saving.register_keras_serializable(package="VAE")
+@tf.keras.utils.register_keras_serializable(package="VAE")
 class VarScalingLayer(layers.Layer):
     """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
 
@@ -91,7 +93,7 @@ class VarScalingLayer(layers.Layer):
         return cls(source_layer, **config)
 
 
-@tf.keras.saving.register_keras_serializable(package="VAE")
+@tf.keras.utils.register_keras_serializable(package="VAE")
 class InvertScalingLayer(layers.Layer):
     """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
 
@@ -132,11 +134,11 @@ class DiagCallback(keras.callbacks.Callback):
             self.diags['batch'].assign(batch)
 
 
-@tf.keras.saving.register_keras_serializable(package="VAE")
+@tf.keras.utils.register_keras_serializable(package="VAE")
 class VAE(keras.Model):
     """ Variational autoencoder model. """
 
-    def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=0.0,
+    def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=0.0, var_min=.05**2,
                  **kwargs):
 
         super().__init__(**kwargs)
@@ -153,7 +155,7 @@ class VAE(keras.Model):
         self.z_M1_tracker = keras.metrics.Mean(name='z_M1')
         self.z_M2_tracker = keras.metrics.Mean(name='z_M2')
         self.diags = {'epoch': tf.Variable(0.0, trainable=False)}
-        self.x_var_min = tf.constant(.05**2)  # IP
+        self.x_var_min = tf.constant(var_min)
 
     @property
     def metrics(self):
@@ -201,7 +203,7 @@ class VAE(keras.Model):
         x_mean, x_log_var, x_sin, _ = self.decoder(z)
         # Turn error into its principal component
         error = data - x_mean
-        error = rotate_layer(error, x_sin)
+        error = RotateLayer()(error, x_sin)
 
         # Force variances to preset value in first epochs.
         log_var0 = tf.math.log(self.x_var_min)
@@ -286,7 +288,7 @@ class VAE(keras.Model):
 
         return losses
 
-@tf.keras.saving.register_keras_serializable(package="VAE")
+@tf.keras.utils.register_keras_serializable(package="VAE")
 class VaeMulti(VAE):
 
     def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=0.0,
@@ -312,7 +314,6 @@ class VaeMulti(VAE):
         decoder = keras.saving.deserialize_keras_object(decoder, safe_mode=False)
         mc_samples = config.pop('mc_samples')
         l2_rotation = config.pop('l2_rotation')
-        print('CONFIG ', config)
         return cls(encoder, decoder, mc_samples, l2_rotation)
 
     def alpha(self):
@@ -361,6 +362,13 @@ class VaeMultiBkg(VaeMulti):
     def alpha(self):
         return tf.constant(0.0)
 
+class ZeroLayer(layers.Layer):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+    def call(self, x):
+        return tf.zeros_like(x)
 
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
@@ -470,12 +478,12 @@ class DenseVae(tuner.HyperModel):
         decoder = self._build_decoder_inno(1, obs_dim)
 
         # Create the VAE
-        model = VaeMulti([encoder], [decoder])
+        model = VaeMulti([encoder], [decoder], var_min=.01**2)
 
         # Build learning function.
         self.lr = [tf.keras.callbacks.ReduceLROnPlateau("loss",
                                                         factor=.5, patience=2,
-                                                        min_delta=.1, mode='min',
+                                                        min_delta=.01, mode='min', #.1
                                                         min_lr=1e-6,
                                                         verbose=False),
                    ]
@@ -484,7 +492,7 @@ class DenseVae(tuner.HyperModel):
         self.stopper = [tf.keras.callbacks.EarlyStopping(monitor='kl_loss',
                                                          patience=5, verbose=False,
                                                          restore_best_weights=True,
-                                                         min_delta=0.01,
+                                                         min_delta=0.001, #0.01
                                                          start_from_epoch=20),
                         tf.keras.callbacks.TerminateOnNaN()]
 
@@ -526,7 +534,11 @@ class DenseVae(tuner.HyperModel):
             layer.children = []
 
         for layer in model.layers:
-            parents = layer.inbound_nodes[0].inbound_layers
+            if hasattr(self, 'inbound_nodes'):
+                parents = layer.inbound_nodes[0].inbound_layers
+            else:
+                parents = []
+                
             if hasattr(parents, '__iter__'):
                 layer.parents = [layer.name for layer in parents]
             else:
@@ -544,6 +556,10 @@ class DenseVae(tuner.HyperModel):
                 set_depth(child, depth)
 
         set_depth(model.layers[0].name)
+        
+        print('MODEL ',model.name)
+        for n,layer in enumerate(model.layers):
+            print(n,layer.name)
 
     def set_trainable(self, model):
         self.create_tree(model.encoder)
@@ -838,7 +854,7 @@ class DenseVae(tuner.HyperModel):
                                     name='e_var_rescale')(e_log_var)
 
         #Rotatation (not used)
-        e_sin = tf.zeros_like(e_mean)
+        e_sin = ZeroLayer()(e_mean)
 
         # Sample
         e_sample = SamplingLayer(name='e_sample')([e_mean, e_log_var])
@@ -901,7 +917,7 @@ class DenseVae(tuner.HyperModel):
         x_log_var = layers.Dense(state_dim, name="x_log_var")(x_log_var)
 
         # sin IP
-        x_sin = tf.zeros_like(x_mean[:, 0:1], name='x_sin')
+        x_sin = ZeroLayer(name='x_sin')(x_mean[:, 0:1])
         with self.hp.conditional_scope('use_rotation', [True]):
             x_sin = layers.Lambda(lambda x: tf.stop_gradient(x))(trans_input)
             x_sin = self._add_model_layers(x_sin, 'x_sin')
@@ -912,7 +928,7 @@ class DenseVae(tuner.HyperModel):
 
         # Sample
         x_sample = SamplingLayer(name='x_sample')([x_mean, x_log_var])
-        x_sample = rotate_layer(x_sample, x_sin)
+        x_sample = RotateLayer()(x_sample, x_sin)
 
         # Different models
         x_mean_model = keras.Model(input_layer, x_mean, name='decoder_mean')
@@ -924,6 +940,28 @@ class DenseVae(tuner.HyperModel):
         return decoder, x_mean_model, x_var_model, x_sample_model
 
 
+class SqrtLayer(layers.Layer):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+    def __call__(self, x):
+        return tf.sqrt(x)
+
+class RotateLayer(layers.Layer):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+    def call(self, x, sin):
+        if x.shape[1] == 2:
+            cos = SqrtLayer()(1 - sin**2)
+            x0 = cos[:, 0:1]*x[:, 0:1] - sin[:, 0:1]*x[:, 1:2]
+            x1 = sin[:, 0:1]*x[:, 0:1] + cos[:, 0:1]*x[:, 1:2]
+            return tf.keras.layers.Concatenate(axis=-1)([x0, x1])
+        else:
+            return x
+        
 def rotate_layer(x, sin):
     """ Rotate over angle asin theta. """
     if x.shape[1] == 2:
