@@ -48,39 +48,71 @@ class CoderBuilder(ABC):
     Build encoder and decoder. 
     """
     
-    def build(self, hp):
-        """ Build encoder and decoder network. """
-        self.hp = hp 
-        self._build_scale_layer()
-        self._build_encoder()
-        self._build_decoder()
+    def reset(self):
+        self.encoder, self.decoder = None, None 
+        self.stopper = None 
+        self.lr = None 
         
     @abstractmethod 
-    def _build_encoder(self):
+    def build_encoder(self):
         """ Build decoder network. """
         pass
     
     @abstractmethod 
-    def _build_decoder(self):
+    def build_decoder(self):
         """ Build decoder network. """
         pass
+    
+    def build_model(self, hp):
+        # Build actual model.
+        if hp.is_active('l2_rotation'):
+            l2_rotation = hp.get('l2_rotation')
+        else:
+            l2_rotation = 0.0
+
+        # Create the VAE
+        self.model = VAE(self.encoder, self.decoder, 
+                         mc_samples=hp.get('mc_samples'),
+                         l2_rotation=l2_rotation, alpha=self.alpha)
+    
+    def build_alpha(self, func):
+        """ Decoder var nudging factor. """
+        self.alpha = func
+    
+    def build_stopper(self, **kwargs):
+        """ Build stopper for VAE training. """ 
+        stopper_options = {'monitor':'loss','patience':5, 'verbose':False,
+                           'restore_best_weights':False, 'min_delta':0.05,
+                           'start_from_epoch':20, 'mode':'min'}
+        stopper_options = {**stopper_options, **kwargs}
         
-    def _build_scale_layer(self):
+        self.stopper = [tf.keras.callbacks.EarlyStopping(**stopper_options),
+                        tf.keras.callbacks.TerminateOnNaN()]
+        
+    def build_lr(self, **kwargs):
+        learning_options = {'monitor':"loss", 'factor':.5, 'patience':2,
+                            'min_delta':.1, 'mode':'min', 'min_lr':1e-6,
+                            'verbose':False}
+        learning_options = {**learning_options, **kwargs}
+        self.lr = [tf.keras.callbacks.ReduceLROnPlateau(**learning_options)]
+        
+        
+    def build_scale_layer(self, hp):
         """ Build the layer that centers latent space distribution. """
-        latent_dim = self.hp.get('latent_dim')
+        latent_dim = hp.get('latent_dim')
         self.scale_layer = layers.Dense(latent_dim, name="z_mean_rescale",
                                         kernel_initializer='identity',
                                         trainable=False,
                                         kernel_constraint=keras.constraints.NonNeg())
         
-    def _add_model_layers(self, input_layer, name):
+    def _add_model_layers(self, hp, input_layer, name):
         """ Create a set of linear layer, activation function pair. """
-        hidden_dim = self.hp.get('hidden_dim')
-        nodes = self.hp.get('no_nodes')
+        hidden_dim = hp.get('hidden_dim')
+        nodes = hp.get('no_nodes')
 
         x = input_layer
-        for n in range(self.hp.get('no_layers')):
-            l1 = keras.regularizers.L1(self.hp.get('l1'))
+        for n in range(hp.get('no_layers')):
+            l1 = keras.regularizers.L1(hp.get('l1'))
             x  = layers.Dense(nodes, name=f'hidden{n:02d}_{name}_dense',
                               kernel_regularizer=l1,
                               kernel_initializer='he_normal',
@@ -90,24 +122,24 @@ class CoderBuilder(ABC):
 
         return x
         
-class BackgroundCoderBuilder(CoderBuilder):
+class StateCoderBuilder(CoderBuilder):
     """ VAE apply to model states. """
     
-    def _build_encoder(self):
-        state_dim = self.hp.get('state_dim')
-        latent_dim = self.hp.get('latent_dim')
+    def build_encoder(self, hp):
+        state_dim = hp.get('state_dim')
+        latent_dim = hp.get('latent_dim')
         
         # Input to decoder
         input_layer = layers.Input(shape=(state_dim,), name='x_input')
 
         # Mean
-        z_mean = self._add_model_layers(input_layer, name='z_mean')
-        z_mean = layers.Dense(latent_dim, name="z_mean")(z_mean)
+        z_mean = self._add_model_layers(hp, input_layer, name='z_mean')
+        z_mean = layers.Dense(latent_dim, name="output_z_mean")(z_mean)
         z_mean = self.scale_layer(z_mean)
 
         # Var
-        z_log_var = self._add_model_layers(input_layer, name='z_log_var')
-        z_log_var = layers.Dense(latent_dim, name="z_log_var")(z_log_var)
+        z_log_var = self._add_model_layers(hp, input_layer, name='z_log_var')
+        z_log_var = layers.Dense(latent_dim, name="output_z_log_var")(z_log_var)
         z_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
                                     name='z_var_rescale')(z_log_var)
@@ -125,11 +157,11 @@ class BackgroundCoderBuilder(CoderBuilder):
 
         self.encoder = encoder 
         
-    def _build_decoder(self):
+    def build_decoder(self, hp):
         """ Build the encoder. """
-        state_dim = self.hp.get('state_dim')
-        latent_dim = self.hp.get('latent_dim')
-        hidden_dim = self.hp.get('hidden_dim')
+        state_dim = hp.get('state_dim')
+        latent_dim = hp.get('latent_dim')
+        hidden_dim = hp.get('hidden_dim')
 
         # Input processing.
         input_layer = layers.Input(shape=(latent_dim,), name='z_input')
@@ -138,22 +170,22 @@ class BackgroundCoderBuilder(CoderBuilder):
                                          name='sampling_rescale')(input_layer)
 
         # Mean
-        x_mean = self._add_model_layers(trans_input, 'x_mean')
-        x_mean = layers.Dense(state_dim, name="x_mean")(x_mean)
+        x_mean = self._add_model_layers(hp, trans_input, 'x_mean')
+        x_mean = layers.Dense(state_dim, name="output_x_mean")(x_mean)
 
         # Var
-        x_log_var = self._add_model_layers(trans_input, 'x_log_var')
-        x_log_var = layers.Dense(state_dim, name="x_log_var")(x_log_var)
+        x_log_var = self._add_model_layers(hp, trans_input, 'x_log_var')
+        x_log_var = layers.Dense(state_dim, name="output_x_log_var")(x_log_var)
 
         # sin IP
         x_sin = ZeroLayer(name='x_sin')(x_mean[:, 0:1])
-        with self.hp.conditional_scope('use_rotation', [True]):
+        with hp.conditional_scope('use_rotation', [True]):
             x_sin = layers.Lambda(lambda x: keras.ops.stop_gradient(x),
                                   output_shape=(None,latent_dim),
                                   name='rotation_stop_gradient')(trans_input)
             #x_sin = trans_input
-            x_sin = self._add_model_layers(x_sin, 'x_sin')
-        x_sin = layers.Dense(state_dim-1, name="x_sin", activation='tanh',
+            x_sin = self._add_model_layers(hp, x_sin, 'x_sin')
+        x_sin = layers.Dense(state_dim-1, name="output_x_sin", activation='tanh',
                              kernel_initializer='zeros',
                              bias_initializer='zeros',
                              trainable=False)(x_sin)
@@ -171,23 +203,23 @@ class BackgroundCoderBuilder(CoderBuilder):
         
         self.decoder = decoder
         
-class InnoCoderBuilder(CoderBuilder):
+class ObsCoderBuilder(CoderBuilder):
     """ Build VAE for innovations. """
     
-    def _build_decoder(self):
+    def build_decoder(self, hp):
         # Input
-        latent_dim = self.hp.get('latent_dim')
+        latent_dim = hp.get('latent_dim')
         input_layer = layers.Input(shape=(latent_dim,), name='e_input')
-        obs_dim = self.hp.get('obs_dim')
+        obs_dim = hp.get('obs_dim')
 
         # Mean
-        e_mean = self._add_model_layers(input_layer, name='e_mean')
-        e_mean = layers.Dense(obs_dim, name='e_mean')(e_mean)
+        e_mean = self._add_model_layers(hp, input_layer, name='e_mean')
+        e_mean = layers.Dense(obs_dim, name='output_e_mean')(e_mean)
         e_mean = self.scale_layer(e_mean)
 
         # Var
-        e_log_var = self._add_model_layers(input_layer, 'e_log_var')
-        e_log_var = layers.Dense(obs_dim, name="e_log_var")(e_log_var)
+        e_log_var = self._add_model_layers(hp, input_layer, 'e_log_var')
+        e_log_var = layers.Dense(obs_dim, name="output_e_log_var")(e_log_var)
         e_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
                                     name='e_var_rescale')(e_log_var)
@@ -204,22 +236,22 @@ class InnoCoderBuilder(CoderBuilder):
         
         self.decoder = idecoder 
         
-    def _build_encoder(self):
-        nodes = self.hp.get('no_nodes')
-        obs_dim = self.hp.get('obs_dim')
-        latent_dim = self.hp.get('latent_dim')
+    def build_encoder(self, hp):
+        nodes = hp.get('no_nodes')
+        obs_dim = hp.get('obs_dim')
+        latent_dim = hp.get('latent_dim')
 
         # Input
         input_layer = layers.Input(shape=(obs_dim,), name='d_input')
 
         # Mean
-        d_mean = self._add_model_layers(input_layer, name='d_mean')
-        d_mean = layers.Dense(latent_dim, name='d_mean')(d_mean)
+        d_mean = self._add_model_layers(hp, input_layer, name='d_mean')
+        d_mean = layers.Dense(latent_dim, name='output_d_mean')(d_mean)
         d_mean = self.scale_layer(d_mean)
 
         # Var
-        d_log_var = self._add_model_layers(input_layer, 'd_log_var')
-        d_log_var = layers.Dense(latent_dim, name="d_log_var")(d_log_var)
+        d_log_var = self._add_model_layers(hp, input_layer, 'd_log_var')
+        d_log_var = layers.Dense(latent_dim, name="output_d_log_var")(d_log_var)
         d_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
                                     name='d_var_rescale')(d_log_var)
@@ -234,45 +266,12 @@ class InnoCoderBuilder(CoderBuilder):
     
 #%% 
 
-def vae_factory(option):
-    """ Create coder, learning rate and stoppers. """
-    
-    stopper_options = {'monitor':'loss','patience':5, 'verbose':True,
-                       'restore_best_weights':True, 'min_delta':0.05,
-                       'start_from_epoch':20}
-    learning_options = {'monitor':"loss", 'factor':.5, 'patience':2,
-                        'min_delta':.1, 'mode':'min', 'min_lr':1e-6,
-                        'verbose':True}
-    
-    if option in ['background']:
-        stopper_options = {**stopper_options, 'monitor':'kl_loss', 
-                           'min_delta':.01}
-        coder = BackgroundCoderBuilder()
-        alpha = lambda epoch : tf.constant(0.0)
-    elif option in ['inno']:
-        stopper_options = {**stopper_options, 'monitor':'kl_loss',
-                           'min_delta':.001}
-        learning_options = {**learning_options, 'min_delta':.01}
-        coder = InnoCoderBuilder()
-        alpha = lambda epoch : tf.exp(-0.1*epoch)
-    else:
-        coder = BackgroundCoderBuilder()
-        alpha = lambda epoch : tf.exp(-0.1*epoch)
-    
-    
-    stopper = [tf.keras.callbacks.EarlyStopping(**stopper_options),
-               tf.keras.callbacks.TerminateOnNaN()]
-    learner = [tf.keras.callbacks.ReduceLROnPlateau(**learning_options)]
-    
-    return coder, learner, stopper, alpha
-
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
     
-    def __init__(self, coder, lr, stopper, alpha, **kwargs):
+    def __init__(self, builder, **kwargs):
         super().__init__(**kwargs)
-        self.coder, self.lr, self.stopper = coder, lr, stopper
-        self.alpha = alpha
+        self.builder = builder
      
     def build(self, hp):
         """ 
@@ -281,21 +280,37 @@ class DenseVae(tuner.HyperModel):
         
         # Set hyperparameters.
         self.hp = self._build_default_hp(hp)
-
-        # Build decoder/encoder-pair
-        self.coder.build(self.hp)
-        encoder = self.coder.encoder
-        decoder = self.coder.decoder
-
-        # Build actual model.
-        if self.hp.is_active('l2_rotation'):
-            l2_rotation = self.hp.get('l2_rotation')
-        else:
-            l2_rotation = 0.0
-
-        # Create the VAE
-        model = VAE(encoder, decoder, mc_samples=self.hp.get('mc_samples'),
-                    l2_rotation=l2_rotation, alpha=self.alpha)
+        
+        #Build architecture 
+        if self.hp.get('architecture')=='clima':
+            self.builder.reset()
+            self.builder.build_scale_layer(self.hp)
+            self.builder.build_encoder(self.hp)
+            self.builder.build_decoder(self.hp)
+            self.builder.build_alpha(lambda epoch : tf.exp(-0.1*epoch))
+            self.builder.build_stopper()
+            self.builder.build_lr()
+            self.builder.build_model(self.hp)
+        elif self.hp.get('architecture')=='background':
+            self.builder.reset()
+            self.builder.build_scale_layer(self.hp)
+            self.builder.build_encoder(self.hp)
+            self.builder.build_decoder(self.hp)
+            self.builder.build_alpha(lambda epoch : tf.constant(0.0))
+            self.builder.build_stopper(monitor='kl_loss', min_delta=.01)
+            self.builder.build_lr()
+            self.builder.build_model(self.hp)
+        elif self.hp.get('architecture')=='inno':
+            self.builder.reset()
+            self.builder.build_scale_layer(self.hp)
+            self.builder.build_encoder(self.hp)
+            self.builder.build_decoder(self.hp)
+            self.builder.build_alpha(lambda epoch : tf.exp(-0.1*epoch))
+            self.builder.build_stopper(monitor='kl_loss', min_delta=.001)
+            self.builder.build_lr(min_delta=.01)
+            self.builder.build_model(self.hp)
+            
+        model = self.builder.model 
 
         # Callback that keeps track of epoch and other diagnostics.
         self.diag = [DiagCallback(**model.diags), tensorboard_callback]
@@ -316,16 +331,34 @@ class DenseVae(tuner.HyperModel):
         return model
 
     def set_trainable(self, model):
+        #Default is no training.
+        model.encoder.trainable = False
+        model.decoder.trainable = False
         
-        if self.hp.get('training') == 'offline':
-            model.encoder.trainable = True
-            model.decoder.trainable = True
-            model.encoder.get_layer('z_mean_rescale').trainable = False
-            model.encoder.get_layer('z_var_rescale').trainable = False
-            model.decoder.get_layer('sampling_rescale').trainable = False
+        #Number of hidden layers to train.
+        max_layers = min(self.hp.get('no_layers'), 
+                         self.hp.get('training_hidden'))
+        
+        #Set trainable layers decoder.
+        pairs = [(f'hidden{n:02d}_',layer.name) for n in range(max_layers)
+                 for layer in model.decoder.layers]
+        if self.hp.get('training_output_x'):
+            pairs += [(f'output_',layer.name) for layer in model.decoder.layers]
+        for name in [pair[1] for pair in pairs if pair[0] in pair[1]]:
+            model.decoder.get_layer(name).trainable = True
             
+        #Set trainable layers encoder.
+        de2en = lambda n : self.hp.get('no_layers') - n - 1
+        pairs = [(f'hidden{de2en(n):02d}_',layer.name) for n in range(max_layers)
+                 for layer in model.encoder.layers]
+        if self.hp.get('training_output_z'):
+            pairs += [(f'output_',layer.name) for layer in model.encoder.layers]
+        for name in [pair[1] for pair in pairs if pair[0] in pair[1]]:
+            model.encoder.get_layer(name).trainable = True      
+            
+        #Set trainable of rotation layers. 
         with self.hp.conditional_scope('use_rotation', [True]):
-            layer = model.decoder.get_layer(name='x_sin')
+            layer = model.decoder.get_layer(name='output_x_sin')
             layer.trainable = self.hp.get('use_rotation') and layer.trainable
             
         return model
@@ -335,11 +368,11 @@ class DenseVae(tuner.HyperModel):
                     'batch_size': hp.get('batch_size'),
                     'shuffle': True,
                     'callbacks': [],
-                    'verbose': True,
+                    'verbose': False,
                     **kwargs
                     }
         fit_args['callbacks'] = fit_args['callbacks']
-        fit_args['callbacks'] += self.lr + self.stopper + self.diag
+        fit_args['callbacks'] += self.builder.lr + self.builder.stopper + self.diag
 
         keras.utils.set_random_seed(1000)
         return model.fit(*args, **fit_args)
@@ -373,14 +406,20 @@ class DenseVae(tuner.HyperModel):
 
         # Training setup
         hp.Fixed('epochs', 50)
-        hp.Int('batch_size', default=4, min_value=1, max_value=1024,
+        hp.Int('batch_size', default=64, min_value=1, max_value=1024,
                sampling='log')
         hp.Float('lr_init', default=5e-3, min_value=5e-4, max_value=1e-2,
                  step=5e-4)
 
         # Basic layer setup
         hp.Int('no_layers', default=4, min_value=0, max_value=8, step=1)
-        hp.Choice('training', ['offline', 'online', 'obs'], default='offline')
+        #hp.Choice('training', ['offline', 'online', 'obs'], default='offline')
+        hp.Boolean('training_output_z', default=False)
+        hp.Boolean('training_output_x', default=False)
+        hp.Int('training_hidden', default=0, min_value=0, step=1,
+               max_value=hp.get('no_layers'))
+        
+        hp.Choice('architecture', ['state','obs'], default='state')
         hp.Int('no_nodes', default=64, min_value=2, max_value=1024,
                sampling='log')
         hp.Fixed('latent_dim', 2)
@@ -397,6 +436,9 @@ class DenseVae(tuner.HyperModel):
                      max_value=1.0, sampling='log')
 
         return hp
+    
+    def clear(self):
+        keras.backend.clear_session(free_memory=True)
     
 def tune_DenseVae(x):
     """ Function to tune the hyperparameters in DenseVae. """

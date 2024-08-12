@@ -10,20 +10,15 @@ error from Gaussian.
 """
 
 import tensorflow as tf
-import importlib
+tf.config.experimental.list_physical_devices()
 import numpy as np
 import dapper.mods as modelling
-import dapper.da_methods as da
 import dapper.da_methods.ensemble as eda
 from dapper.mods import ComplexCircle as circle
 from dapper.mods.ComplexCircle import vae_plots as plots
 from dapper.vae import basic as vae
-from dapper.tools.seeding import set_seed
 import shutil
 import os, dill
-from datetime import datetime
-from sklearn import preprocessing
-import scipy
 import random
 import keras
 import xarray as xr
@@ -250,6 +245,8 @@ class ClimaExperiment(VaeExperiment):
         plotReconstruction.save()
         
 climas = ClimaExperiment(0.0)
+clima = iter(ClimaExperiment(0.0))
+clima = next(clima)
         
 #%% Experiment static
 

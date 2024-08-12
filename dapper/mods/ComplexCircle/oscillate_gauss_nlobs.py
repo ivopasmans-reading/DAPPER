@@ -13,7 +13,6 @@ import keras
 import tensorflow as tf
 tf.config.experimental.list_physical_devices()
 
-
 import shutil
 import os
 import dill
@@ -123,14 +122,14 @@ class ClimaExperiment(VaeExperiment):
     def __next__(self):
         self.create_model(self.seed)
 
-        if os.path.exists(self.filepath) and False: #IP
+        if os.path.exists(self.filepath):
             self.load(self.filepath)
         else:
             self.hypermodel.fit(self.hp, self.model, self.xx,
                                 verbose=True, shuffle=True)
             self.save(self.filepath)
 
-        self.plot_clima()
+        #self.plot_clima()
 
         self.seed += 100
         return self
@@ -149,11 +148,16 @@ class ClimaExperiment(VaeExperiment):
                                          amplitude=self.amplitude)
 
         # Create model
-        coder, learner, stopper, alpha = vae.vae_factory('default')
-        self.hypermodel = vae.DenseVae(coder, learner, stopper, alpha)
-        self.hp = self.hypermodel.build_hp(no_layers=6, no_nodes=32, 
+        builder = vae.StateCoderBuilder()
+        self.hypermodel = vae.DenseVae(builder)
+        self.hp = self.hypermodel.build_hp(no_layers=7, no_nodes=32, 
                                            use_rotation=False, batch_size=32, 
-                                           latent_dim=1, mc_samples=1)
+                                           latent_dim=1, mc_samples=1,
+                                           architecture='clima',
+                                           training_hidden=99,
+                                           training_output_z=True,
+                                           training_output_x=True)
+        
         
         self.seed = seed
         reset_random_seeds(seed)
@@ -193,8 +197,8 @@ class ClimaExperiment(VaeExperiment):
 
 
 climas = ClimaExperiment(0.0)
-climas.reset()
-climas = next(climas)
+#climas.reset()
+#climas = next(climas)
 
 # %% Experiment oscillation
 
@@ -206,7 +210,7 @@ class XpsClass:
                         'single-clima','double-clima']
         self.names = ['no DA', 'ETKF', 'single-transfer', 'single-clima',
                       'double-clima','double-transfer']
-        self.names = ['single-transfer']
+        #self.names = ['double-transfer']
         self.hp = clima.hp
         self.hypermodel = clima.hypermodel
         self.model = clima.model
@@ -229,6 +233,7 @@ class XpsClass:
             xp = self.factory.build(self.Nens, 'Sqrt svd', name='ETKF', rot=False)
         elif name == 'single-transfer':
             bkg_trans = eda.BackgroundVaeTransform(self.hypermodel, self.hp, self.model)
+            
             xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='single-transfer',
                                     VaeTransforms=[bkg_trans])
         elif name == 'double-transfer':
@@ -268,24 +273,17 @@ class OscillateExperiment(VaeExperiment):
         self.save_name = save_name
 
         self.climas = iter(ClimaExperiment(0.0))
-
+        self.create_data()
         self.fails = []
-        self.keys = dict([('crps', plots.CRPS), ('histogram', plots.Histogram),
-                          ('rmse', plots.EnsError)])
-        self.data_for = dict([(key, xr.Dataset()) for key in self.keys])
-        self.data_ana = dict([(key, xr.Dataset()) for key in self.keys])
-
+        
     def run(self):
         # Run all models repeatedly
         climas = (next(self.climas) for _ in range(0, self.Nclima))
         for clima in climas: 
             for n in range(0, self.N):
                 self.seed = clima.seed + n * 7
-                print(f'Running seed {self.seed}')
                 self.run1(clima)
-
-            # Save output
-            self.save()
+                
             del(clima)
 
     def check_done(self, xp):
@@ -296,14 +294,11 @@ class OscillateExperiment(VaeExperiment):
 
         rmse = rmse['x']
         try:
-            x = rmse.sel({'experiment': xp.name, 'seed': self.seed})
+            x = rmse.sel(experiment=xp.name, seed=self.seed)
         except:
             return False
 
-        if np.any(np.isnan(x.data)):
-            return False
-        else:
-            return True
+        return not np.any(np.isnan(x.data))
 
     def run1(self, clima):
         # Create new run.
@@ -315,11 +310,14 @@ class OscillateExperiment(VaeExperiment):
         self.xps = iter(XpsClass(clima, HMM, Nens, self.No))
 
         for xp in self.xps:
-            has_done = self.check_done(xp)
-            if has_done:
-                print('DONE ', xp.name, self.seed)
+            
+            #Test if experiment has been loaded from file. 
+            if (xp.name, self.seed) in self.done:
+                print('\nDONE ', xp.name, self.seed)
                 del(xp)
                 continue
+            else:
+                print('\nRUNNING ', xp.name, self.seed)
 
             # Run the DA experiment
             reset_random_seeds(self.seed)
@@ -333,6 +331,9 @@ class OscillateExperiment(VaeExperiment):
                 continue
 
             # Calculate CRPS and save in Xarray.
+            self.load()
+            assert hasattr(self,'data_for')
+            assert hasattr(self,'data_ana')
             for key, value in self.keys.items():
                 kwargs = {'xp': xp, 'xx': xx,
                           'seed': self.seed, 'stage': 'forecast'}
@@ -343,9 +344,18 @@ class OscillateExperiment(VaeExperiment):
                           'seed': self.seed, 'stage': 'analysis'}
                 stat = plots.calculate_stat(value, **kwargs)
                 self.data_ana[key] = xr.merge([self.data_ana[key], stat])
+            
+            #Save output
+            assert hasattr(self,'data_for')
+            assert hasattr(self,'data_ana')
+            self.save()
+            self.done += [(xp.name, self.seed)]
 
-            tf.keras.backend.clear_session()
-            del(xp)
+            #Delete models to free memory. 
+            del(self.data_for, self.data_ana)
+            if hasattr(xp, 'hypermodel'):
+                xp.hypermodel.clear()
+            keras.backend.clear_session(free_memory=True)
 
     @property
     def filepath(self):
@@ -354,10 +364,32 @@ class OscillateExperiment(VaeExperiment):
     def save(self):
         with open(self.filepath, 'wb') as stream:
             dill.dump((self.data_for, self.data_ana), stream)
+            
+            
+    def create_data(self):
+        self.keys = dict([('crps', plots.CRPS), ('histogram', plots.Histogram),
+                          ('rmse', plots.EnsError)])
+        self.data_for = dict([(key, xr.Dataset()) for key in self.keys])
+        self.data_ana = dict([(key, xr.Dataset()) for key in self.keys])
+        self.done = []
 
     def load(self):
+        self.create_data()
+        
+        if not os.path.exists(self.filepath):
+            return
+        
         with open(self.filepath, 'rb') as stream:
             self.data_for, self.data_ana = dill.load(stream)
+            
+        if len(self.data_ana['rmse'])>0:
+            #Check for which combinations (experiment,seed) all values are non-nan
+            isnull = self.data_ana['rmse']['x'].isnull()
+            coords = set(isnull.coords) - set(['seed','experiment'])
+            isnull = isnull.reduce(lambda x, axis : np.any(x, axis=axis), dim=coords)
+            self.done = [(xp, seed) for xp in list(isnull['experiment'].data)
+                         for seed in list(isnull['seed'].data)
+                         if not isnull.sel(experiment=xp, seed=seed)]
 
     def delete(self):
         if os.path.exists(self.filepath):
@@ -366,7 +398,7 @@ class OscillateExperiment(VaeExperiment):
 
 # Run the experiment.
 exp = OscillateExperiment(49, 10)
-#exp.load()
+exp.load()
 exp.run()
 
 # %% Plot output statistics.

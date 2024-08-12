@@ -658,6 +658,7 @@ class DenseVae(tuner.HyperModel):
                 'decoder': file_path + '_decoder.tf',
                 'hp': file_path + '_hp.pkl'}
 
+    @staticmethod
     def build_hp(self, *args, **kwargs):
         """ 
         Return HyperParameter object setting hyperparameter that differ from

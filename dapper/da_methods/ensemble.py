@@ -313,7 +313,7 @@ class EnRts(EnProcessor):
 class VaeTransform(EnProcessor):
     """ 
     Use variational autoencoder to transform background and 
-    innovations into Latent space. 
+    innovations into Latent space. Does not carry out retraining. 
     """
     
     def __init__(self, hypermodel, hp, model, **kwargs):
@@ -322,7 +322,7 @@ class VaeTransform(EnProcessor):
         self.ref_model = model 
         self.model     = model  
         
-    def pre(self, k, ko, y, E, Y, D):        
+    def pre(self, k, ko, y, E, Y, D): 
         self.train(E, D)
         
         #Convert background ensemble in state space to latent space. 
@@ -348,7 +348,7 @@ class VaeTransform(EnProcessor):
                                                   E[None,...]), axis=0)
         
         #Convert latent background ensemble to state space. 
-        _, _, _, E = self.model.decoder.predict(E, verbose=0) 
+        _, _, _, E = self.model.decoder.predict(E, verbose=False) 
         E = np.array(E)
         
         return E, Y, D
@@ -357,16 +357,20 @@ class VaeTransform(EnProcessor):
         pass
     
 class CyclingVaeTransform(VaeTransform):
+    """ 
+    NEEDS RIVISION.  Updates background weights starting from previous' 
+    window weight. 
+    """
     
     def __init__(self, hypermodel, hp, model, **kwargs):
         super().__init__(hypermodel, hp, model, **kwargs)
         
-        self.hp.values['training'] = 'offline'
         self.model = self.hypermodel.build(self.hp)
-        
         self.ref_model = model
+        
         if self.ref_model is not None:
             self.model.set_weights(self.ref_model.get_weights())
+        
     
     def train(self, E, D): 
         self.hp.values['batch_size'] = int(0.1*np.size(E,0))
@@ -386,41 +390,51 @@ class CyclingVaeTransform(VaeTransform):
         history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
         
 class BackgroundVaeTransform(VaeTransform):
+    """
+    As VaeTransform, but carries out training as outlined in hypermodel. 
+    """
     
     def __init__(self, hypermodel, hp, model, **kwargs):
         super().__init__(hypermodel, hp, model, **kwargs)
         
         self.ref_model = model
-        self.hp.values['training'] = 'offline'
-        self.model = self.hypermodel.build_bkg(self.hp)
+        self.hp.values['architecture'] = 'background'
+        self.model = self.hypermodel.build(self.hp)
         self.model.set_weights(self.ref_model.get_weights())
+        
     
     def train(self, E, D): 
         self.hp.values['batch_size'] = int(0.1*np.size(E,0))
-        self.model.optimizer.lr.assign(self.hp.values['lr_init']*1e-2)
+        #self.model.optimizer.lr.assign(self.hp.values['lr_init']*1e-2)
+        self.model.optimizer.learning_rate.assign(self.hp.values['lr_init']*1e-2)
         self.model.set_weights(self.ref_model.get_weights())
         
         #Rescale 
-        layer = self.model.encoders[1].get_layer('z_mean_rescale')
-        Z = self.model.encoders[1](E)
+        layer = self.model.encoder.get_layer('z_mean_rescale')
+        Z, _, _ = self.model.encoder(E)
         Zstd = np.std(Z, axis=0, keepdims=True)
         layer.kernel.assign(layer.kernel/Zstd)
         
         #Recenter 
-        Z = self.model.encoders[1](E)
+        _, _, Z = self.model.encoder(E)
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
         history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
         
-class InnoVaeTransform(VaeTransform):    
+class InnoVaeTransform(VaeTransform):   
+    """
+    As BkgTransform, but now for innovations instead of background. 
+    """
     
     def __init__(self, hypermodel, hp, model, N, error_sample, **kwargs):
         super().__init__(hypermodel, hp, model, **kwargs)
         
+        self.hp.values['architecture'] = 'inno'
         self.N = N
         self.ref_model = model
         self.error_sample = error_sample
+        self.M_previous = 0
         
     def pre(self, k, ko, y, E, Y, D):
         from matplotlib import pyplot as plt 
@@ -441,15 +455,6 @@ class InnoVaeTransform(VaeTransform):
         D = D - N
         D = np.array(D)
         
-        if False:
-            print('SHAPE ',np.shape(Y))
-            count0, bins0 = np.histogram(Y0,bins=16)
-            count, bins = np.histogram(Y,bins=16)
-        
-            plt.figure()
-            plt.plot(.5*bins0[:-1]+.5*bins0[1:],count0,'b-')
-            plt.plot(.5*bins[:-1]+.5*bins[1:],count,'r--')
-        
         return E, Y, D
     
     def post(self, k, ko, y, E, Y, D):
@@ -459,7 +464,11 @@ class InnoVaeTransform(VaeTransform):
         
     def train(self, E, y):
         M = self.HMM.ObsNow.M
-        self.model = self.hypermodel.build_inno(self.hp, self.ref_model, M)
+        
+        if M != self.M_previous:
+            hp = self.hypermodel.build_hp(self.hp, state_dim=M)
+            self.model = self.hypermodel.build(hp)
+            self.M_previous = M
         
         #Create pseudo innovations 
         ind = np.random.randint(0, np.size(E,0), size=(self.N,))
@@ -484,7 +493,7 @@ class InnoVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, D, verbose=True) 
+        history = self.hypermodel.fit(self.hp, self.model, D, verbose=False) 
         
         Dl = self.model.encoder(D)[-1]
         
@@ -1182,6 +1191,9 @@ class EnDa:
    
    
 class EndaFactory:
+    """ 
+    Class to reproduce the DA systems in DAPPER as combination of EnProcessors.
+    """
     
     def build(self, N, filter='', smoother='', **kwargs):
         self.options = {**kwargs, 'N':N,
