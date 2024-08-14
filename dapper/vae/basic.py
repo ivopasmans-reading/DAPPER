@@ -356,7 +356,6 @@ class VaeMulti(VAE):
 
         return losses
 
-
 class VaeMultiBkg(VaeMulti):
 
     def alpha(self):
@@ -368,7 +367,7 @@ class ZeroLayer(layers.Layer):
         super().__init__(*args, **kwargs)
         
     def call(self, x):
-        return tf.zeros_like(x)
+        return tf.zeros_like(x[:,0:1])
 
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
@@ -511,7 +510,7 @@ class DenseVae(tuner.HyperModel):
 
         # Compile with optimizer
         lr = self.hp.get('lr_init')
-        model.compile(optimizer=keras.optimizers.legacy.Adam(learning_rate=lr))
+        model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr))
 
         return model
 
@@ -530,23 +529,21 @@ class DenseVae(tuner.HyperModel):
         return model.fit(*args, **fit_args)
 
     def create_tree(self, model):
+        inputs, outputs = {}, {}
         for layer in model.layers:
-            layer.children = []
-
+            layer_inputs = layer.input if isinstance(layer.input,list) else [layer.input]
+            layer_outputs = layer.output if isinstance(layer.output,list) else [layer.output]
+            
+            inputs[layer.name] = set([id(layer_input) for layer_input in layer_inputs])
+            outputs[layer.name] = set([id(layer_output) for layer_output in layer_outputs])
+           
+        is_empty = lambda set1, set2 : len(set.intersection(set1, set2)) == 0
         for layer in model.layers:
-            if hasattr(self, 'inbound_nodes'):
-                parents = layer.inbound_nodes[0].inbound_layers
-            else:
-                parents = []
-                
-            if hasattr(parents, '__iter__'):
-                layer.parents = [layer.name for layer in parents]
-            else:
-                layer.parents = [parents.name]
-
-            for parent in layer.parents:
-                model.get_layer(parent).children += [layer.name]
-
+            layer.children = [child for child, child_inputs in inputs.items() 
+                              if not is_empty(child_inputs, outputs[layer.name])]
+            layer.parents = [parent for parent, parent_outputs in outputs.items() 
+                             if not is_empty(parent_outputs, inputs[layer.name])]
+            
         def set_depth(name, depth=0):
             layer = model.get_layer(name)
             if isinstance(layer, layers.Dense):
@@ -556,10 +553,7 @@ class DenseVae(tuner.HyperModel):
                 set_depth(child, depth)
 
         set_depth(model.layers[0].name)
-        
-        print('MODEL ',model.name)
-        for n,layer in enumerate(model.layers):
-            print(n,layer.name)
+
 
     def set_trainable(self, model):
         self.create_tree(model.encoder)
@@ -659,7 +653,7 @@ class DenseVae(tuner.HyperModel):
                 'hp': file_path + '_hp.pkl'}
 
     @staticmethod
-    def build_hp(self, *args, **kwargs):
+    def build_hp(*args, **kwargs):
         """ 
         Return HyperParameter object setting hyperparameter that differ from
         default. 
@@ -918,14 +912,14 @@ class DenseVae(tuner.HyperModel):
         x_log_var = layers.Dense(state_dim, name="x_log_var")(x_log_var)
 
         # sin IP
-        x_sin = ZeroLayer(name='x_sin')(x_mean[:, 0:1])
+        x_sin = ZeroLayer(name='x_sin')(x_mean)
         with self.hp.conditional_scope('use_rotation', [True]):
-            x_sin = layers.Lambda(lambda x: tf.stop_gradient(x))(trans_input)
-            x_sin = self._add_model_layers(x_sin, 'x_sin')
-        x_sin = layers.Dense(state_dim-1, name="x_sin", activation='tanh',
-                             kernel_initializer='zeros',
-                             bias_initializer='zeros',
-                             trainable=False)(x_sin)
+            if self.hp.get('use_rotation'):
+                x_sin = self._add_model_layers(x_sin, 'x_sin')
+                x_sin = layers.Dense(state_dim-1, name="x_sin", activation='tanh',
+                                     kernel_initializer='zeros',
+                                     bias_initializer='zeros',
+                                     trainable=False)(x_sin)
 
         # Sample
         x_sample = SamplingLayer(name='x_sample')([x_mean, x_log_var])

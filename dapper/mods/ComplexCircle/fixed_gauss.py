@@ -16,7 +16,7 @@ import dapper.mods as modelling
 import dapper.da_methods.ensemble as eda
 from dapper.mods import ComplexCircle as circle
 from dapper.mods.ComplexCircle import vae_plots as plots
-from dapper.vae import basic as vae
+from dapper.vae import circle_vae as vae
 import shutil
 import os, dill
 import random
@@ -24,7 +24,7 @@ import keras
 import xarray as xr
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/exp01'
+FIG_DIR = '/home/ivo/Figures/vae/paper_static'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
 # Number of ensemble member
@@ -167,9 +167,11 @@ plot.save()
 #%% Generate climatology
 
 class ClimaExperiment(VaeExperiment):
+    """ Run the climatology and use it for training weights. """
     
-    def __init__(self, r_amplitude):
+    def __init__(self, r_amplitude, do_plot=False):
         self.amplitude = r_amplitude
+        self.do_plot = do_plot
         
     def reset(self):
         self.seed = 1000 
@@ -188,16 +190,18 @@ class ClimaExperiment(VaeExperiment):
                                 verbose=False, shuffle=True)
             self.save(self.filepath)
             
-        self.plot_clima()
+        if self.do_plot:
+            self.plot_clima()
         
         self.seed += 100
         return self
                 
     @property 
     def filepath(self):
+        """ Return default filepath for saving models."""
         A = int(self.amplitude*100)
         seed = int(self.seed)
-        return os.path.join(MODEL_PATH, f'clima_{A:02d}_{seed:04d}.pkl')
+        return os.path.join(MODEL_PATH, f'climaK3_{A:02d}_{seed:04d}.pkl')
                 
     def create_model(self, seed):
         """ Run the climatology and train VAE."""
@@ -206,9 +210,21 @@ class ClimaExperiment(VaeExperiment):
         self.HMM, self.xx, _ = run_model(10000, 1, seed, amplitude=self.amplitude)
 
         # Create model
-        self.hypermodel = vae.DenseVae()
-        self.hp = self.hypermodel.build_hp(no_layers=6, no_nodes=32, use_rotation=False,
-                                           batch_size=32, latent_dim=1, mc_samples=1)
+        if False:
+            self.hypermodel = vae.DenseVae()
+            self.hp = self.hypermodel.build_hp(no_layers=6, no_nodes=32, use_rotation=False,
+                                               batch_size=32, latent_dim=1, mc_samples=1)
+        else:
+            builder = vae.StateCoderBuilder()
+            self.hypermodel = vae.DenseVae(builder)
+            self.hp = self.hypermodel.build_hp(no_layers=6, no_nodes=32, 
+                                               use_rotation=False, batch_size=32, 
+                                               latent_dim=1, mc_samples=1,
+                                               architecture='clima',
+                                               training_hidden=99,
+                                               training_output_z=True,
+                                               training_output_x=True,
+                                               verbose=False)
         
         self.seed = seed
         reset_random_seeds(seed)
@@ -217,10 +233,23 @@ class ClimaExperiment(VaeExperiment):
     def save(self, filepath):
         with open(filepath, 'wb') as stream:
             dill.dump(self.model.get_weights(), stream)
-        
+            
+    def transform_weights(self, wsaves, wmods):
+        #Copy weights from Keras2 model to this new Keras3 model skipping
+        #rotation layers. 
+        m = -1
+        for n,wmod in enumerate(wmods):
+            m += 1
+            if m>=30 and np.mod(m-30,6)==0:
+                m += 2
+            wmods[n] = wsaves[m]
+            
+        return wmods
+            
     def load(self, filepath):
         with open(filepath,'rb') as stream:
-            weights = dill.load(stream)
+            weights = dill.load(stream)   
+           
         self.model.set_weights(weights)
 
     def plot_clima(self):
@@ -244,9 +273,11 @@ class ClimaExperiment(VaeExperiment):
         plotReconstruction.plot(filepath)
         plotReconstruction.save()
         
-climas = ClimaExperiment(0.0)
-clima = iter(ClimaExperiment(0.0))
-clima = next(clima)
+climas = ClimaExperiment(0.0, do_plot=True)
+climas.reset()
+climas = [next(climas) for _ in range(7)]
+
+
         
 #%% Experiment static
 
@@ -255,9 +286,7 @@ from dapper.mods.ComplexCircle import vae_plots as plots
 class XpsClass:
     
     def __init__(self, clima, HMM, Nens, No):
-        self.names = ['no DA', 'ETKF', 'single-transfer', 'double-transfer',
-                      'double-clima']
-        self.names = ['no DA','ETKF','single-transfer','single-clima']
+        self.names = ['no DA','ETKF','single-clima','single-transfer']
         self.names += ['double-clima','double-transfer']
         self.hp =  clima.hp 
         self.hypermodel = clima.hypermodel
@@ -288,7 +317,7 @@ class XpsClass:
             inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No, 
                                               self.HMM.Obs(0).noise.add_sample)
             xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-transfer',
-                                    VaeTransforms=[inno_trans, bkg_trans])
+                                    VaeTransforms=[bkg_trans,inno_trans])
         elif name=='double-cycle':
             cycle_trans = eda.CyclingVaeTransform(self.hypermodel, self.hp, None)
             xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-cycle',
@@ -302,7 +331,7 @@ class XpsClass:
             inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No, 
                                               self.HMM.Obs(0).noise.add_sample)
             xp = self.factory.build(self.Nens,'ETKF_D', No=self.No, name='double-clima',
-                                    VaeTransforms=[inno_trans, vae_trans])
+                                    VaeTransforms=[vae_trans,inno_trans])
         else:
             raise ValueError(f'{name} not a valid name for experiment.')
         
@@ -311,21 +340,17 @@ class XpsClass:
 class StaticExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle. """
     
-    def __init__(self, N, dko, save_name='static.pkl'):
+    def __init__(self, N, dko, save_name='k3static.pkl'):
         self.dko = dko 
-        self.Nclima = max(1,int(np.sqrt(N)))
-        self.N = int(N / self.Nclima)
+        self.Nclima = 2 #IP max(1,int(np.sqrt(N)))
+        self.N = 1 #IP int(N / self.Nclima)
         self.No = Nens * 4 #IP
         self.run_time = 500
         self.save_name = save_name
-        
-        self.climas = iter(ClimaExperiment(0.0))
             
+        self.climas = iter(ClimaExperiment(0.0))
+        self.create_data()
         self.fails = []
-        self.keys = dict([('crps',plots.CRPS), ('histogram',plots.Histogram),
-                          ('rmse',plots.EnsError)])
-        self.data_for = dict([(key,xr.Dataset()) for key in self.keys])
-        self.data_ana = dict([(key,xr.Dataset()) for key in self.keys])
         
         
     def run(self):
@@ -338,25 +363,7 @@ class StaticExperiment(VaeExperiment):
                 self.run1(clima)
                 
             #Save output 
-            self.save()
             del(clima)
-            
-    def check_done(self, xp):
-        rmse = self.data_ana['rmse']
-        
-        if len(rmse)==0:
-            return False
-
-        rmse = rmse['x']
-        try:
-            x = rmse.sel({'experiment':xp.name,'seed':self.seed})
-        except:
-            return False
-        
-        if np.any(np.isnan(x.data)):
-            return False
-        else:
-            return True
         
     
     def run1(self, clima):
@@ -369,11 +376,13 @@ class StaticExperiment(VaeExperiment):
         self.xps = iter(XpsClass(clima, HMM, Nens, self.No))
         
         for xp in self.xps:
-            has_done = self.check_done(xp)
-            if has_done:
-                print('DONE ',xp.name, self.seed)
+            #Test if experiment has been loaded from file. 
+            if (xp.name, self.seed) in self.done:
+                print('\nDONE ', xp.name, self.seed)
                 del(xp)
                 continue
+            else:
+                print('\nRUNNING ', xp.name, self.seed)
             
             #Run the DA experiment
             reset_random_seeds(self.seed)
@@ -396,19 +405,44 @@ class StaticExperiment(VaeExperiment):
                 stat = plots.calculate_stat(value, **kwargs)
                 self.data_ana[key] = xr.merge([self.data_ana[key], stat])
                 
+            #Save output
+            self.save()
+            self.done += [(xp.name, self.seed)]
+                
             del(xp)
     
     @property
     def filepath(self):
         return os.path.join(MODEL_PATH, self.save_name)
     
+    def create_data(self):
+        self.keys = dict([('crps', plots.CRPS), ('histogram', plots.Histogram),
+                          ('rmse', plots.EnsError)])
+        self.data_for = dict([(key, xr.Dataset()) for key in self.keys])
+        self.data_ana = dict([(key, xr.Dataset()) for key in self.keys])
+        self.done = []
+    
     def save(self):
         with open(self.filepath,'wb') as stream:
             dill.dump((self.data_for, self.data_ana), stream)
             
     def load(self):
+        self.create_data()
+        
+        if not os.path.exists(self.filepath):
+            return
+        
         with open(self.filepath, 'rb') as stream:
             self.data_for, self.data_ana = dill.load(stream)
+            
+        if len(self.data_ana['rmse'])>0:
+            #Check for which combinations (experiment,seed) all values are non-nan
+            isnull = self.data_ana['rmse']['x'].isnull()
+            coords = set(isnull.coords) - set(['seed','experiment'])
+            isnull = isnull.reduce(lambda x, axis : np.any(x, axis=axis), dim=coords)
+            self.done = [(xp, seed) for xp in list(isnull['experiment'].data)
+                         for seed in list(isnull['seed'].data)
+                         if not isnull.sel(experiment=xp, seed=seed)]
             
     def delete(self):
         if os.path.exists(self.filepath):
@@ -455,7 +489,7 @@ for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
 
 #%% Generate animation 
 
-def plot_movie(experiments, run_time, dko, No=Nens*4):
+def plot_movie(experiments, run_time, dko, No=Nens*16):
     climas = iter(ClimaExperiment(0.0))
     for n in range(1):
         clima  = climas.__next__()
@@ -473,13 +507,20 @@ def plot_movie(experiments, run_time, dko, No=Nens*4):
         _, _, _ = run_model(run_time, dko, clima.seed)
         xp.HMM = HMM
         xp.assimilate(HMM, xx, yy, liveplots=False)
+        
+        
         #Plot 
         circle = plots.CirclePlot(FIG_DIR)
         circle.add_track(xp.name, xp.HMM.tseq.tt, xx)
         circle.add_obs(xp.HMM.tseq.tto, yy)
         circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f) 
         circle.add_ens_ana(xp.name, xp.HMM.tseq.tto, xp.stats.E.a)
+        circle.add_latent_for(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['f'])
+        circle.add_latent_ana(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['a'])
+        
+       
         circle.animate_time(xp.HMM.tseq.tto, fig_name='movie_'+xp.name)
         
     
-plot_movie(['no DA','ETKF','single-clima','single-transfer','double-clima','double-transfer'], 500, 10)
+#plot_movie(['no DA','ETKF','single-clima','single-transfer','double-clima','double-transfer'], 500, 10)
+plot_movie(['double-transfer'], 100, 10)

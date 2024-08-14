@@ -144,6 +144,51 @@ class AngularGenerator(object):
         return self.steps[self.n]
 
 
+class Styles:
+    
+    def __init__(self):
+        self.build_styles()
+        self.reset()
+    
+    def build_styles(self):
+        """ Generate 9 different combinations of color and linestyle. """
+        from matplotlib import colors as mcolors
+        self.n_options = 9
+        self.colors = mcolors.TABLEAU_COLORS.keys()
+        self.styles = ['-', (0, (1, 1)), (5, (10, 3)),
+                       (0, (3, 1, 1, 1)), (0, (3, 10, 1, 10, 1, 10)), (5, (10, 3)),
+                       (0, (3, 1, 1, 1, 1, 1)), (0, (3, 5, 1, 5, 1, 5)), (0, (5, 5))]
+        self.markers = ['o', 's', 'X', 'H', 'v', '^', 'P', 'D', '8']
+        self.hatches = ['/', '\\', '|', '-', '+', 'x', 'o', '.', '*']
+        
+    def reset(self):
+        self.indices = {}
+        self.index = 0 
+        
+    def assign(self, label):
+        if label not in self.indices:
+            self.index[label] = np.min([i for i in range(self.n_options) if i not in 
+                                       self.indices.values()])
+        self.index = self.indices[label]
+        self.label = label
+        
+    @property 
+    def color(self):
+        return self.colors[self.index]
+    
+    @property 
+    def line(self):
+        return self.styles[self.index]
+    
+    @property 
+    def marker(self):
+        return self.markers[self.index]
+    
+    @property 
+    def hatch(self):
+        return self.hatches[self.index]
+    
+
 class BasePlots:
     """ 
     Abstract class that is used as template for figures that generate 
@@ -159,6 +204,13 @@ class BasePlots:
     def __init__(self, fig_dir):
         self.fig_dir = fig_dir
         self.labels = []
+        self.style = Styles()
+        
+    def assign_styles(self, labels):
+        """ Couple plotting styles to labels. """
+        self.style.reset()
+        for label in labels:
+            self.style.assign(label)
 
     @staticmethod
     def adaptable_bins(x, alpha=0.05):
@@ -211,7 +263,6 @@ class BasePlots:
         def calc_ticks(step, lims):
             steps = np.array([np.floor(lims[0] / step),
                               np.ceil(lims[-1] / step)])
-            print('STEPS',steps)
             ticks = np.arange(steps[0], steps[1]+1)*step
             return ticks
 
@@ -310,16 +361,6 @@ class BasePlots:
 
         return ax
 
-    def styles(self):
-        """ Generate 9 different combinations of color and linestyle. """
-        from matplotlib import colors as mcolors
-        colors = mcolors.TABLEAU_COLORS.keys()
-        styles = ['-', (0, (1, 1)), (5, (10, 3)),
-                  (0, (3, 1, 1, 1)), (0, (3, 10, 1, 10, 1, 10)), (5, (10, 3)),
-                  (0, (3, 1, 1, 1, 1, 1)), (0, (3, 5, 1, 5, 1, 5)), (0, (5, 5))]
-        markers = ['o', 's', 'X', 'H', 'v', '^', 'P', 'D', '8']
-        return zip(self.labels, colors, styles, markers)
-
     @property
     def fig_path(self):
         if self.fig_dir is None:
@@ -369,16 +410,16 @@ class ConfidencePlots(BasePlots):
             self.fig_name = fig_name
 
         self.labels = np.array(data.coords[self.clabel])
-        styles = self.styles()
         xvalues = np.array(data.coords[self.xlabel])
 
         ax = self.axes
-        for style in styles:
-            mean, low, high = self.calculate_rms(data.sel({self.clabel: style[0]}),
+        for label in self.labels:
+            self.style.assign(label)
+            mean, low, high = self.calculate_rms(data.sel({self.clabel: self.style.label}),
                                                  level)
-            ax.fill_between(xvalues, low, high, alpha=.3, color=style[1])
-            ax.plot(xvalues, mean, color=style[1], linestyle=style[2],
-                    label=style[0])
+            ax.fill_between(xvalues, low, high, alpha=.3, color=self.style.color)
+            ax.plot(xvalues, mean, color=self.style.color, linestyle=self.style.line,
+                    label=self.style.label)
 
         for ax in np.reshape(self.axes, (-1,)):
             ax.grid()
@@ -770,7 +811,6 @@ class ReconstructionPlot(BasePlots):
 
 # %% Classes to generate plots.
 
-
 class ProbDensityPlots(BasePlots):
     """ Plot probability density as function of true value. """
 
@@ -967,7 +1007,7 @@ class CrpsPlots(BasePlots):
         self.fig.subplots_adjust(wspace=.14, hspace=.24, left=.08, right=.96,
                                  bottom=.18, top=.94)
 
-        keys = list(self.data.keys())
+        keys = list(self.data.keys()) #x,y,radius,angle
         xps = np.array(self.data.coords['experiment'])
         for ax, key in zip(self.axes.ravel(), keys):
             self.plot_crps1(ax, self.data[key])
@@ -992,9 +1032,9 @@ class CrpsPlots(BasePlots):
         self.labels = ['crps', 'reliability', 'resolution']
         width = np.linspace(-.5, .5, len(self.labels)+1)*.6
         width = .5*width[1:]+.5*width[:-1]
-        for n, style in enumerate(self.styles()):
-            varname = style[0]
-            data1 = data.sel(variable=varname)
+        for n, label in enumerate(self.labels):
+            self.style.assign(label)
+            data1 = data.sel(variable=label)
             data1 = self.calculate_mean(data1)
 
             mean = np.array(data1['mean'].data)
@@ -1005,14 +1045,15 @@ class CrpsPlots(BasePlots):
             #            np.array([low, high]), linewidth=0.0, elinewidth=2.0,
             #            color=style[1], marker=style[3], label=varname, capsize=3)
             ax.bar(range(len(data1.coords['experiment'])) + width[n],
-                   mean, yerr=np.array([low, high]), label=varname,
+                   mean, yerr=np.array([low, high]), label=label, 
+                   color=self.style.color, hatch=self.style.hatch,
                    width=np.diff(width[:2]))
 
 class SingleCrpsPlots(CrpsPlots):
     
     def plot_crps(self, fig_name='crps_single'):
         """ 
-        Plot CRPS, reliability and resolution. 
+        Plot CRPS only. 
         """
 
         # Create figure
@@ -1028,11 +1069,12 @@ class SingleCrpsPlots(CrpsPlots):
         width = np.linspace(-.5, .5, len(self.labels)+1)*.6
         width = .5*width[1:]+.5*width[:-1]
         
-        keys = list(self.data.keys())[:4]
-        for n, style in enumerate(self.styles()):
+        keys = list(self.data.keys())[:4] #x,y,radius,angle
+        for n, label in enumerate(self.labels):
             mean, low, high = [],[],[]
+            self.style.assign(label)
             for key in keys:
-                data1 = self.data[key].sel(variable='crps', experiment=style[0])
+                data1 = self.data[key].sel(variable='crps', experiment=label)
                 if key=='angle':
                     data1 = np.deg2rad(data1)
                 data1 = self.calculate_mean(data1)
@@ -1042,8 +1084,9 @@ class SingleCrpsPlots(CrpsPlots):
                 high.append(float(data1['high'].data) - mean[-1])
                 
             ax.bar(width[n] + range(1,len(keys)+1),
-                   mean, yerr=np.array([low, high]), label=style[0],
-                   width=np.diff(width[:2])) 
+                   mean, yerr=np.array([low, high]), label=label,
+                   width=np.diff(width[:2]), color=self.style.color,
+                   hatch=self.style.hatch) 
 
         ax.set_title('crps')        
         keys[-1] += ' [rad]'
@@ -1139,23 +1182,24 @@ class TaylorPlots(BasePlots):
         self.labels = np.array(data.coords['experiment'])
 
         self.handles = []
-        for n, style in enumerate(self.styles()):
-            ssEE = data.sel(experiment=style[0], variable='ensemble',
+        for n, label in enumerate(self.labels):
+            self.style.assign(label)
+            
+            ssEE = data.sel(experiment=label, variable='ensemble',
                             metric='variance')
-            ssTT = data.sel(experiment=style[0],
+            ssTT = data.sel(experiment=label,
                             variable='truth', metric='variance')
-            covET = data.sel(experiment=style[0], variable='ensemble',
+            covET = data.sel(experiment=label, variable='ensemble',
                              metric='covariance')
-            ssET = data.sel(experiment=style[0], variable='ensemble',
+            ssET = data.sel(experiment=label, variable='ensemble',
                             metric='variance')**.5
-            ssET *= data.sel(experiment=style[0],
+            ssET *= data.sel(experiment=label,
                              variable='truth', metric='variance')**.5
 
             # Take expectation value
             sTT = np.array(self.calculate_mean(ssTT, np.ones_like(ssTT)))**.5
             sEE = np.array(self.calculate_mean(ssEE, np.ones_like(ssEE)))**.5
             corET = np.array(self.calculate_mean(covET, ssET))
-            print('ET', style[0], corET, sTT, sEE)
             # Plot point
             corET = self.cor2rad(corET)
 
@@ -1165,8 +1209,8 @@ class TaylorPlots(BasePlots):
             h, = ax.plot(self.cor2rad(cor), r, 'k-', label='truth')
 
             # Plot
-            h, = ax.plot(corET[0], sEE[0], style[3], label=style[0],
-                         color=style[1])
+            h, = ax.plot(corET[0], sEE[0], self.style.marker, label=label,
+                         color=self.style.color)
             self.handles.append(h)
 
             # Plot rmse
@@ -1186,12 +1230,8 @@ class TaylorPlots(BasePlots):
                                        [max(corET)-corET[0]]]),
                         yerr=np.array([[sEE[0]-min(sEE)],
                                        [max(sEE)-sEE[0]]]),
-                        label=style[0], color=style[1], marker=style[3])
-
-            print('xerr', np.array([[corET[0]-min(corET)],
-                                   [max(corET)-corET[0]]]))
-            print('yerr', np.array([[sEE[0]-min(sEE)],
-                                   [max(sEE)-sEE[0]]]))
+                        label=label, color=self.style.color, 
+                        marker=self.style.marker)
 
     def plot_taylor1(self, ax, data):
 
@@ -1210,13 +1250,14 @@ class TaylorPlots(BasePlots):
         self.labels = np.array(data.coords['experiment'])
 
         self.handles = []
-        for n, style in enumerate(self.styles()):
+        for n, label in enumerate(self.labels):
+            self.style.assign(label)
             ax.errorbar(corr0[n], std0[n],
                         xerr=np.array([corrL[n:n+1], corrH[n:n+1]]),
                         yerr=np.array([stdL[n:n+1], stdH[n:n+1]]),
-                        label=style[0], color=style[1], marker=style[3])
-            h, = ax.plot(corr0[n], std0[n], style[3], label=style[0],
-                         color=style[1])
+                        label=label, color=self.style.color, marker=self.style.marker)
+            h, = ax.plot(corr0[n], std0[n], self.style.marker, label=label,
+                         color=self.style.color)
             self.handles.append(h)
 
 
@@ -1235,34 +1276,36 @@ class CirclePlot(BasePlots):
     def add_ens_for(self, label, times, E):
         # Store data in dict.
         self.ens_for[label] = {'time': times,
-                               'data': E, 'style': ('Forecast', 'b')}
+                               'data': E, 'style': ('Forecast', 'b','v')}
         self.labels = self.labels.union([label])
 
     def add_ens_ana(self, label, times, E):
         # Store data in dict.
         self.ens_ana[label] = {'time': times,
-                               'data': E, 'style': ('Analysis', 'g')}
+                               'data': E, 'style': ('Analysis', 'g','^')}
         self.labels = self.labels.union([label])
 
     def add_latent_for(self, label, times, E):
         self.latent_dim = np.size(E, -1)
         self.latent_for[label] = {'time': times,
-                                  'data': E, 'style': ('Forecast', 'b')}
+                                  'data': E, 'style': ('Forecast', 'b','v')}
         self.labels = self.labels.union([label])
+        self.latent_dim = np.size(E,-1)
 
     def add_latent_ana(self, label, times, E):
         self.latent_ana[label] = {'time': times,
-                                  'data': E, 'style': ('Analysis', 'g')}
+                                  'data': E, 'style': ('Analysis', 'g','^')}
         self.labels = self.labels.union([label])
+        self.latent_dim = np.size(E,-1)
 
     def add_track_latent(self, label, times, x):
         self.latent_tracks[label] = {'time': times, 'data': x,
-                                     'style': ('Truth', 'k')}
+                                     'style': ('Truth', 'k','o')}
         self.labels = self.labels.union([label])
 
     def add_track(self, label, times, x):
         self.tracks[label] = {'time': times, 'data': x,
-                              'style': ('Truth', 'k')}
+                              'style': ('Truth', 'k','o')}
         self.labels = self.labels.union([label])
 
     def add_obs(self, times, y):
@@ -1299,13 +1342,13 @@ class CirclePlot(BasePlots):
 
             # Plot forecast ensemble
             ax.plot(value['data'][mask][0, :, 0],
-                    value['data'][mask][0, :, 1], 'o',
+                    value['data'][mask][0, :, 1], value['style'][2],
                     alpha=.2, color=value['style'][1],
                     label=value['style'][0], markeredgewidth=0)
 
             # Plot mean
             m = np.mean(value['data'][mask], axis=1)
-            h, = ax.plot(m[0, 0], m[0, 1], 'o',
+            h, = ax.plot(m[0, 0], m[0, 1], value['style'][2],
                          alpha=1., color=value['style'][1],
                          label=value['style'][0])
 
@@ -1336,7 +1379,7 @@ class CirclePlot(BasePlots):
             plt.close('all')
             self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
             self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
-                                     bottom=.1, top=.94)
+                                     bottom=.12, top=.92)
             # self.assign_styles()
         else:
             for ax in self.axes.flatten():
@@ -1373,7 +1416,6 @@ class CirclePlot(BasePlots):
 
         # Add observation
         mask = self.obs['time'] == time
-
         self.axes[0].plot(np.array([1, 1])*self.obs['data']
                           [mask][0], np.array([-2, 2]), 'k--')
 
@@ -1386,6 +1428,7 @@ class CirclePlot(BasePlots):
                                    label=value['style'][0])
             self.add_handle(h)
 
+        #Layout left plot
         ax = self.axes[0]
         ax.set_xlabel('x')
         ax.set_ylabel('y')
@@ -1393,13 +1436,14 @@ class CirclePlot(BasePlots):
         ax.set_ylim(-2., 2.)
         ax.set_aspect(1)
 
+        #Layout right plot
         ax = self.axes[1]
-        self.set_nice_xlim(ax, lims=[-2, 2])
+        self.set_nice_xlim(ax, lims=[-2, 2], max_ticks=7)
         self.set_nice_ylim(ax, minlim=0)
 
         for ax in self.axes.flatten():
             ax.grid()
-            ax.legend(handles=self.handles, loc='upper left')
+            ax.legend(handles=self.handles, loc='upper left',ncol=2)
             ax.set_title('Time {:5d}'.format(time))
 
     def animate_time(self, times, fig_name='movie_time', fps=4):

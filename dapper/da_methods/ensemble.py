@@ -313,7 +313,7 @@ class EnRts(EnProcessor):
 class VaeTransform(EnProcessor):
     """ 
     Use variational autoencoder to transform background and 
-    innovations into Latent space. Does not carry out retraining. 
+    innovations into latent space. Does not carry out retraining. 
     """
     
     def __init__(self, hypermodel, hp, model, **kwargs):
@@ -397,16 +397,23 @@ class BackgroundVaeTransform(VaeTransform):
     def __init__(self, hypermodel, hp, model, **kwargs):
         super().__init__(hypermodel, hp, model, **kwargs)
         
-        self.ref_model = model
         self.hp.values['architecture'] = 'background'
+        self.ref_model = model
         self.model = self.hypermodel.build(self.hp)
-        self.model.set_weights(self.ref_model.get_weights())
-        
+        self.model.set_weights(self.ref_model.get_weights())        
     
     def train(self, E, D): 
-        self.hp.values['batch_size'] = int(0.1*np.size(E,0))
-        #self.model.optimizer.lr.assign(self.hp.values['lr_init']*1e-2)
-        self.model.optimizer.learning_rate.assign(self.hp.values['lr_init']*1e-2)
+        if self.hp.get('verbose'):
+            print('Background training')
+            
+        batch_size = min(self.hp.get('batch_size'), int(0.1*np.size(E,0)))
+        self.hp.values['batch_size'] = batch_size
+        
+        #Reset learning rate, otherwise lr from last run is used. 
+        lr_init = self.hp.values['lr_init']*1e-2
+        self.model.optimizer.learning_rate.assign(lr_init)
+        
+        #Copy weights from climatology
         self.model.set_weights(self.ref_model.get_weights())
         
         #Rescale 
@@ -416,11 +423,13 @@ class BackgroundVaeTransform(VaeTransform):
         layer.kernel.assign(layer.kernel/Zstd)
         
         #Recenter 
-        _, _, Z = self.model.encoder(E)
+        Z, _, _ = self.model.encoder(E)
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
+        #Train weights. 
+        history = self.hypermodel.fit(self.hp, self.model, E, 
+                                      verbose=self.hp.get('verbose'))
         
 class InnoVaeTransform(VaeTransform):   
     """
@@ -430,11 +439,10 @@ class InnoVaeTransform(VaeTransform):
     def __init__(self, hypermodel, hp, model, N, error_sample, **kwargs):
         super().__init__(hypermodel, hp, model, **kwargs)
         
-        self.hp.values['architecture'] = 'inno'
         self.N = N
         self.ref_model = model
         self.error_sample = error_sample
-        self.M_previous = 0
+        self.model = None
         
     def pre(self, k, ko, y, E, Y, D):
         from matplotlib import pyplot as plt 
@@ -463,12 +471,33 @@ class InnoVaeTransform(VaeTransform):
         return E, Y, D
         
     def train(self, E, y):
+        
+        #Number of observations
         M = self.HMM.ObsNow.M
         
-        if M != self.M_previous:
-            hp = self.hypermodel.build_hp(self.hp, state_dim=M)
-            self.model = self.hypermodel.build(hp)
-            self.M_previous = M
+        #Create new on if input size does not match number observations
+        if self.model is None or M != self.hp.get('state_dim'):
+            hp = self.hypermodel.build_hp(self.hp, state_dim=M,
+                                          architecture='inno')
+            self.model = self.hypermodel.build(hp) 
+            
+            
+        if self.hp.get('verbose'):
+            print('INNO training')
+        
+        #Copy hidden layers if possible from state VAE
+        def copy_matched(ref,inno):
+            ref_layers = set([layer.name for layer in ref.layers])
+            inno_layers = set([layer.name for layer in inno.layers])
+            shared_layers = [name for name in set.intersection(inno_layers, ref_layers)
+                             if 'hidden' in name and not 'hidden00' in name]
+            for name in shared_layers:
+                inno_layer = inno.get_layer(name)
+                ref_layer = ref.get_layer(name) 
+                inno_layer.set_weights(ref_layer.get_weights())
+                
+        copy_matched(self.ref_model.encoder, self.model.encoder)
+        copy_matched(self.ref_model.decoder, self.model.decoder)
         
         #Create pseudo innovations 
         ind = np.random.randint(0, np.size(E,0), size=(self.N,))
@@ -484,19 +513,20 @@ class InnoVaeTransform(VaeTransform):
         
         #Rescale 
         layer = self.model.encoder.get_layer('z_mean_rescale')
-        _, _, Z = self.model.encoder(D)
+        Z, _, _ = self.model.encoder(D)
         Zstd = np.std(Z, axis=0, keepdims=True)
         layer.kernel.assign(layer.kernel/Zstd)
 
         #Recenter 
-        _, _, Z = self.model.encoder(D)
+        Z, _, _ = self.model.encoder(D)
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, D, verbose=False) 
-        
-        Dl = self.model.encoder(D)[-1]
-        
+        #Train weights
+        lr_init = self.hp.values['lr_init']*5e-2
+        self.model.optimizer.learning_rate.assign(lr_init)
+        history = self.hypermodel.fit(self.hp, self.model, D, 
+                                      verbose=True) #self.hp.get('verbose'))
         
 #----------------------------------------------------------------------
 

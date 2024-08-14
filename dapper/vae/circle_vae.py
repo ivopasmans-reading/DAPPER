@@ -3,7 +3,7 @@
 """
 Created on Tue Jul 30 10:11:36 2024
 
-Dense VAE 
+Module containing classes to create DNN-VAE. 
 
 @author: ivo
 """
@@ -17,9 +17,6 @@ import tensorflow as tf
 import keras_tuner as tuner
 import keras 
 from keras import layers 
-#from tensorflow import keras
-#from tensorflow.keras import layers
-
 
 #Directory to store logs from VAE optimization. 
 LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
@@ -41,7 +38,7 @@ def rotate(x, theta, axis=-1):
     x = np.swapaxes(x, 0, axis)
     return x
 
-#%% VAE factory 
+#%% Neural-network builders creating layers. 
 
 class CoderBuilder(ABC):
     """ 
@@ -55,7 +52,7 @@ class CoderBuilder(ABC):
         
     @abstractmethod 
     def build_encoder(self):
-        """ Build decoder network. """
+        """ Build encoder network. """
         pass
     
     @abstractmethod 
@@ -64,6 +61,7 @@ class CoderBuilder(ABC):
         pass
     
     def build_model(self, hp):
+        """ Build model from layers using settings in hp."""
         # Build actual model.
         if hp.is_active('l2_rotation'):
             l2_rotation = hp.get('l2_rotation')
@@ -76,13 +74,13 @@ class CoderBuilder(ABC):
                          l2_rotation=l2_rotation, alpha=self.alpha)
     
     def build_alpha(self, func):
-        """ Decoder var nudging factor. """
+        """ Decoder variance nudging factor. """
         self.alpha = func
     
     def build_stopper(self, **kwargs):
         """ Build stopper for VAE training. """ 
         stopper_options = {'monitor':'loss','patience':5, 'verbose':False,
-                           'restore_best_weights':False, 'min_delta':0.05,
+                           'restore_best_weights':False, 'min_delta':0.01,
                            'start_from_epoch':20, 'mode':'min'}
         stopper_options = {**stopper_options, **kwargs}
         
@@ -90,6 +88,7 @@ class CoderBuilder(ABC):
                         tf.keras.callbacks.TerminateOnNaN()]
         
     def build_lr(self, **kwargs):
+        """ Method that adjust learning rate as function of epoch. """
         learning_options = {'monitor':"loss", 'factor':.5, 'patience':2,
                             'min_delta':.1, 'mode':'min', 'min_lr':1e-6,
                             'verbose':False}
@@ -123,7 +122,10 @@ class CoderBuilder(ABC):
         return x
         
 class StateCoderBuilder(CoderBuilder):
-    """ VAE apply to model states. """
+    """ 
+    VAE applied to model states using different networks for 
+    mean and variance. 
+    """
     
     def build_encoder(self, hp):
         state_dim = hp.get('state_dim')
@@ -158,7 +160,6 @@ class StateCoderBuilder(CoderBuilder):
         self.encoder = encoder 
         
     def build_decoder(self, hp):
-        """ Build the encoder. """
         state_dim = hp.get('state_dim')
         latent_dim = hp.get('latent_dim')
         hidden_dim = hp.get('hidden_dim')
@@ -178,20 +179,21 @@ class StateCoderBuilder(CoderBuilder):
         x_log_var = layers.Dense(state_dim, name="output_x_log_var")(x_log_var)
 
         # sin IP
-        x_sin = ZeroLayer(name='x_sin')(x_mean[:, 0:1])
+        x_sin = ZeroLayer(name='output_x_sin')(x_mean[:, 0:1])
         with hp.conditional_scope('use_rotation', [True]):
-            x_sin = layers.Lambda(lambda x: keras.ops.stop_gradient(x),
-                                  output_shape=(None,latent_dim),
-                                  name='rotation_stop_gradient')(trans_input)
-            #x_sin = trans_input
-            x_sin = self._add_model_layers(hp, x_sin, 'x_sin')
-        x_sin = layers.Dense(state_dim-1, name="output_x_sin", activation='tanh',
-                             kernel_initializer='zeros',
-                             bias_initializer='zeros',
-                             trainable=False)(x_sin)
+            if hp.get('use_rotation'):
+                #x_sin = layers.Lambda(lambda x: keras.ops.stop_gradient(x),
+                #                      output_shape=(None,latent_dim),
+                #                      name='rotation_stop_gradient')(trans_input)
+                x_sin = self._add_model_layers(hp, x_sin, 'x_sin')
+                x_sin = layers.Dense(state_dim-1, name="output_x_sin", 
+                                     activation='tanh',
+                                     kernel_initializer='he',
+                                     bias_initializer='zeros',
+                                     trainable=False)(x_sin)
 
         # Sample
-        x_sample = SamplingLayer(name='x_sample')([x_mean, x_log_var])
+        x_sample = SamplingLayer(name='output_x_sample')([x_mean, x_log_var])
         x_sample = RotateLayer(name='rotation')(x_sample, x_sin)
 
         # Different models
@@ -203,68 +205,81 @@ class StateCoderBuilder(CoderBuilder):
         
         self.decoder = decoder
         
-class ObsCoderBuilder(CoderBuilder):
-    """ Build VAE for innovations. """
+class TrunkCoderBuilder(CoderBuilder):
+    """ 
+    VAE applied to model states with mean and variance 
+    sharing layers. 
+    """
     
-    def build_decoder(self, hp):
-        # Input
-        latent_dim = hp.get('latent_dim')
-        input_layer = layers.Input(shape=(latent_dim,), name='e_input')
-        obs_dim = hp.get('obs_dim')
-
-        # Mean
-        e_mean = self._add_model_layers(hp, input_layer, name='e_mean')
-        e_mean = layers.Dense(obs_dim, name='output_e_mean')(e_mean)
-        e_mean = self.scale_layer(e_mean)
-
-        # Var
-        e_log_var = self._add_model_layers(hp, input_layer, 'e_log_var')
-        e_log_var = layers.Dense(obs_dim, name="output_e_log_var")(e_log_var)
-        e_log_var = VarScalingLayer(self.scale_layer,
-                                    trainable=False,
-                                    name='e_var_rescale')(e_log_var)
-
-        #Rotatation (not used)
-        e_sin = ZeroLayer()(e_mean)
-
-        # Sample
-        e_sample = SamplingLayer(name='e_sample')([e_mean, e_log_var])
-
-        # Model
-        idecoder = keras.Model(input_layer, [e_mean, e_log_var, e_sin, e_sample],
-                               name='idecoder')
-        
-        self.decoder = idecoder 
-        
     def build_encoder(self, hp):
-        nodes = hp.get('no_nodes')
-        obs_dim = hp.get('obs_dim')
+        state_dim = hp.get('state_dim')
         latent_dim = hp.get('latent_dim')
-
-        # Input
-        input_layer = layers.Input(shape=(obs_dim,), name='d_input')
+        
+        # Input to decoder
+        input_layer = layers.Input(shape=(state_dim,), name='x_input')
 
         # Mean
-        d_mean = self._add_model_layers(hp, input_layer, name='d_mean')
-        d_mean = layers.Dense(latent_dim, name='output_d_mean')(d_mean)
-        d_mean = self.scale_layer(d_mean)
+        z_trunk = self._add_model_layers(hp, input_layer, name='z')
+        z_mean = layers.Dense(latent_dim, name="output_z_mean")(z_trunk)
+        z_mean = self.scale_layer(z_mean)
 
         # Var
-        d_log_var = self._add_model_layers(hp, input_layer, 'd_log_var')
-        d_log_var = layers.Dense(latent_dim, name="output_d_log_var")(d_log_var)
-        d_log_var = VarScalingLayer(self.scale_layer,
+        z_log_var = layers.Dense(latent_dim, name="output_z_log_var")(z_trunk)
+        z_log_var = VarScalingLayer(self.scale_layer,
                                     trainable=False,
-                                    name='d_var_rescale')(d_log_var)
+                                    name='z_var_rescale')(z_log_var)
 
         # Sample
-        d_sample = SamplingLayer(name='d_sample')([d_mean, d_log_var])
+        z_sample = SamplingLayer(name='z_sample')([z_mean, z_log_var])
 
-        iencoder = keras.Model(input_layer, [d_mean, d_log_var, d_sample],
-                               name='iencoder')
+        # Different models
+        encoder = keras.Model(input_layer, [z_mean, z_log_var, z_sample],
+                              name='encoder')
 
-        self.encoder = iencoder
+        self.encoder = encoder 
+        
+    def build_decoder(self, hp):
+        state_dim = hp.get('state_dim')
+        latent_dim = hp.get('latent_dim')
+        hidden_dim = hp.get('hidden_dim')
+
+        # Input processing.
+        input_layer = layers.Input(shape=(latent_dim,), name='z_input')
+        trans_input = InvertScalingLayer(self.scale_layer,
+                                         trainable=False,
+                                         name='sampling_rescale')(input_layer)
+
+        # Mean
+        x_trunk = self._add_model_layers(hp, trans_input, 'x')
+        x_mean = layers.Dense(state_dim, name="output_x_mean")(x_trunk)
+
+        # Var
+        x_log_var = layers.Dense(state_dim, name="output_x_log_var")(x_trunk)
+
+        # sin IP
+        x_sin = ZeroLayer(name='output_x_sin')(x_mean[:, 0:1])
+        with hp.conditional_scope('use_rotation', [True]):
+            if hp.get('use_rotation'):
+                #x_sin = layers.Lambda(lambda x: keras.ops.stop_gradient(x),
+                #                      output_shape=(None,latent_dim),
+                #                      name='rotation_stop_gradient')(trans_input)
+                x_sin = layers.Dense(state_dim-1, name="output_x_sin", 
+                                     activation='tanh',
+                                     kernel_initializer='he',
+                                     bias_initializer='zeros',
+                                     trainable=False)(x_trunk)
+
+        # Sample
+        x_sample = SamplingLayer(name='output_x_sample')([x_mean, x_log_var])
+        x_sample = RotateLayer(name='rotation')(x_sample, x_sin)
+
+        # Different models
+        decoder = keras.Model(input_layer, [x_mean, x_log_var, x_sin, x_sample],
+                              name='decoder')
+        
+        self.decoder = decoder
     
-#%% 
+#%% Code to combine NN-layers into a NN-model. 
 
 class DenseVae(tuner.HyperModel):
     """ Creates encoders, decoders using dense neural networks. """
@@ -274,12 +289,10 @@ class DenseVae(tuner.HyperModel):
         self.builder = builder
      
     def build(self, hp):
-        """ 
-        Build the ML model and compile it. 
-        """
+        """ Build the ML model and compile it. """
         
         # Set hyperparameters.
-        self.hp = self._build_default_hp(hp)
+        self.hp = hp
         
         #Build architecture 
         if self.hp.get('architecture')=='clima':
@@ -297,8 +310,9 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_encoder(self.hp)
             self.builder.build_decoder(self.hp)
             self.builder.build_alpha(lambda epoch : tf.constant(0.0))
+            #self.builder.build_alpha(lambda epoch : tf.exp(-0.1*epoch))
             self.builder.build_stopper(monitor='kl_loss', min_delta=.01)
-            self.builder.build_lr()
+            self.builder.build_lr(min_delta=.1)
             self.builder.build_model(self.hp)
         elif self.hp.get('architecture')=='inno':
             self.builder.reset()
@@ -306,8 +320,8 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_encoder(self.hp)
             self.builder.build_decoder(self.hp)
             self.builder.build_alpha(lambda epoch : tf.exp(-0.1*epoch))
-            self.builder.build_stopper(monitor='kl_loss', min_delta=.001)
-            self.builder.build_lr(min_delta=.01)
+            self.builder.build_stopper(monitor='kl_loss', min_delta=.01)
+            self.builder.build_lr(min_delta=.1)
             self.builder.build_model(self.hp)
             
         model = self.builder.model 
@@ -321,6 +335,7 @@ class DenseVae(tuner.HyperModel):
         return model
     
     def compile(self, model):
+        """ Compile the NN-model and set optimizer. """
         # Set trainable layer
         self.set_trainable(model)
 
@@ -331,6 +346,8 @@ class DenseVae(tuner.HyperModel):
         return model
 
     def set_trainable(self, model):
+        """ Depending on settings in self.hp switch layers off/on for training. """
+        
         #Default is no training.
         model.encoder.trainable = False
         model.decoder.trainable = False
@@ -358,17 +375,19 @@ class DenseVae(tuner.HyperModel):
             
         #Set trainable of rotation layers. 
         with self.hp.conditional_scope('use_rotation', [True]):
-            layer = model.decoder.get_layer(name='output_x_sin')
-            layer.trainable = self.hp.get('use_rotation') and layer.trainable
+            if self.hp.get('use_rotation'):
+                layer = model.decoder.get_layer(name='output_x_sin')
+                layer.trainable = self.hp.get('use_rotation') and self.hp.get('training_output_x')
             
         return model
 
     def fit(self, hp, model, *args, **kwargs):
+        """ Calculate weights of the model. """
         fit_args = {'epochs': hp.get('epochs'),
                     'batch_size': hp.get('batch_size'),
                     'shuffle': True,
                     'callbacks': [],
-                    'verbose': False,
+                    'verbose': hp.get('verbose'),
                     **kwargs
                     }
         fit_args['callbacks'] = fit_args['callbacks']
@@ -389,6 +408,7 @@ class DenseVae(tuner.HyperModel):
 
         """
         hp = tuner.HyperParameters()
+        hp = self._build_default_hp(hp)
 
         # Overwrite defaults
         for arg in args:
@@ -438,6 +458,7 @@ class DenseVae(tuner.HyperModel):
         return hp
     
     def clear(self):
+        """ Remove model from memory. """
         keras.backend.clear_session(free_memory=True)
     
 def tune_DenseVae(x):
@@ -475,7 +496,7 @@ def tune_DenseVae(x):
 
     return architecture
 
-#%% VAEs
+#%% Class representing generic VAE model. 
 
 @tf.keras.utils.register_keras_serializable(package="VAE")
 class VAE(keras.Model):
@@ -770,8 +791,127 @@ class ZeroLayer(layers.Layer):
     def from_config(cls, config):
         return cls(**config)
 
+#%% TODA: depreciate
 
-#%% Hyperparameter optimisation.
+class ObsCoderBuilder(CoderBuilder):
+    """ 
+    VAE applied to model observations using different networks for 
+    mean and variance. 
+    """
+    
+    def build_decoder(self, hp):
+        # Input
+        latent_dim = hp.get('latent_dim')
+        input_layer = layers.Input(shape=(latent_dim,), name='z_input')
+        obs_dim = hp.get('obs_dim')
 
+        # Mean
+        e_mean = self._add_model_layers(hp, input_layer, name='x_mean')
+        e_mean = layers.Dense(obs_dim, name='output_x_mean')(e_mean)
+        e_mean = self.scale_layer(e_mean)
 
+        # Var
+        e_log_var = self._add_model_layers(hp, input_layer, 'x_log_var')
+        e_log_var = layers.Dense(obs_dim, name="output_x_log_var")(e_log_var)
+        e_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='x_var_rescale')(e_log_var)
 
+        #Rotatation (not used)
+        e_sin = ZeroLayer()(e_mean)
+
+        # Sample
+        e_sample = SamplingLayer(name='output_x_sample')([e_mean, e_log_var])
+
+        # Model
+        idecoder = keras.Model(input_layer, [e_mean, e_log_var, e_sin, e_sample],
+                               name='idecoder')
+        
+        self.decoder = idecoder 
+        
+    def build_encoder(self, hp):
+        nodes = hp.get('no_nodes')
+        obs_dim = hp.get('obs_dim')
+        latent_dim = hp.get('latent_dim')
+
+        # Input
+        input_layer = layers.Input(shape=(obs_dim,), name='x_input')
+
+        # Mean
+        d_mean = self._add_model_layers(hp, input_layer, name='z_mean')
+        d_mean = layers.Dense(latent_dim, name='output_z_mean')(d_mean)
+        d_mean = self.scale_layer(d_mean)
+
+        # Var
+        d_log_var = self._add_model_layers(hp, input_layer, 'z_log_var')
+        d_log_var = layers.Dense(latent_dim, name="output_z_log_var")(d_log_var)
+        d_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='z_var_rescale')(d_log_var)
+
+        # Sample
+        d_sample = SamplingLayer(name='output_z_sample')([d_mean, d_log_var])
+
+        iencoder = keras.Model(input_layer, [d_mean, d_log_var, d_sample],
+                               name='iencoder')
+
+        self.encoder = iencoder
+        
+class TrunkObsCoderBuilder(CoderBuilder):
+    """ Build VAE for innovations. """
+    
+    def build_decoder(self, hp):
+        # Input
+        latent_dim = hp.get('latent_dim')
+        input_layer = layers.Input(shape=(latent_dim,), name='z_input')
+        obs_dim = hp.get('state_dim')
+
+        # Mean
+        e_trunk = self._add_model_layers(hp, input_layer, name='x')
+        e_mean = layers.Dense(obs_dim, name='output_x_mean')(e_trunk)
+        e_mean = self.scale_layer(e_mean)
+
+        # Var
+        e_log_var = layers.Dense(obs_dim, name="output_x_log_var")(e_trunk)
+        e_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='x_var_rescale')(e_log_var)
+
+        #Rotatation (not used)
+        e_sin = ZeroLayer()(e_mean)
+
+        # Sample
+        e_sample = SamplingLayer(name='output_x_sample')([e_mean, e_log_var])
+
+        # Model
+        idecoder = keras.Model(input_layer, [e_mean, e_log_var, e_sin, e_sample],
+                               name='idecoder')
+        
+        self.decoder = idecoder 
+        
+    def build_encoder(self, hp):
+        nodes = hp.get('no_nodes')
+        obs_dim = hp.get('obs_dim')
+        latent_dim = hp.get('latent_dim')
+
+        # Input
+        input_layer = layers.Input(shape=(obs_dim,), name='x_input')
+
+        # Mean
+        d_trunk = self._add_model_layers(hp, input_layer, name='z')
+        d_mean = layers.Dense(latent_dim, name='output_z_mean')(d_trunk)
+        d_mean = self.scale_layer(d_mean)
+
+        # Var
+        d_log_var = layers.Dense(latent_dim, name="output_z_log_var")(d_trunk)
+        d_log_var = VarScalingLayer(self.scale_layer,
+                                    trainable=False,
+                                    name='z_var_rescale')(d_log_var)
+
+        # Sample
+        d_sample = SamplingLayer(name='output_z_sample')([d_mean, d_log_var])
+
+        iencoder = keras.Model(input_layer, [d_mean, d_log_var, d_sample],
+                               name='iencoder')
+
+        self.encoder = iencoder

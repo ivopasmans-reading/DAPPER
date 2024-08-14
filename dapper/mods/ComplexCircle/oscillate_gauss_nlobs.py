@@ -138,7 +138,7 @@ class ClimaExperiment(VaeExperiment):
     def filepath(self):
         A = int(self.amplitude*100)
         seed = int(self.seed)
-        return os.path.join(MODEL_PATH, f'climaGPU_{A:02d}_{seed:04d}.pkl')
+        return os.path.join(MODEL_PATH, f'climaK3_{A:02d}_{seed:04d}.pkl')
 
     def create_model(self, seed):
         """ Run the climatology and train VAE."""
@@ -197,8 +197,8 @@ class ClimaExperiment(VaeExperiment):
 
 
 climas = ClimaExperiment(0.0)
-#climas.reset()
-#climas = next(climas)
+climas.reset()
+climas = next(climas)
 
 # %% Experiment oscillation
 
@@ -208,9 +208,8 @@ class XpsClass:
     def __init__(self, clima, HMM, Nens, No):
         self.names = ['no DA', 'ETKF', 'single-transfer', 'double-transfer',
                         'single-clima','double-clima']
-        self.names = ['no DA', 'ETKF', 'single-transfer', 'single-clima',
-                      'double-clima','double-transfer']
-        #self.names = ['double-transfer']
+        self.names = ['no DA', 'ETKF', 'single-clima', 'single-transfer']
+        #self.names = ['double-clima','double-transfer']
         self.hp = clima.hp
         self.hypermodel = clima.hypermodel
         self.model = clima.model
@@ -264,7 +263,7 @@ class XpsClass:
 class OscillateExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle with varying radius. """
 
-    def __init__(self, N, dko, save_name='oscillation07.pkl'):
+    def __init__(self, N, dko, save_name='k3oscillation07.pkl'):
         self.dko = dko
         self.Nclima = max(1, int(np.sqrt(N)))
         self.N = int(N / self.Nclima)
@@ -346,8 +345,6 @@ class OscillateExperiment(VaeExperiment):
                 self.data_ana[key] = xr.merge([self.data_ana[key], stat])
             
             #Save output
-            assert hasattr(self,'data_for')
-            assert hasattr(self,'data_ana')
             self.save()
             self.done += [(xp.name, self.seed)]
 
