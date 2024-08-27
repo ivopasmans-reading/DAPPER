@@ -74,6 +74,13 @@ def ens2ml(E, p=0.5):
     return mu
 
 
+def set_styles(plot):
+    xps = ['no DA','ETKF','single-clima','single-transfer',
+           'double-clima','double-transfer']
+    for xp in xps:
+        plot.style.assign(xp)
+    return plot
+
 # %% Abstract classes for plotting.
 
 def correlation(x, axis=-1):
@@ -154,12 +161,12 @@ class Styles:
         """ Generate 9 different combinations of color and linestyle. """
         from matplotlib import colors as mcolors
         self.n_options = 9
-        self.colors = mcolors.TABLEAU_COLORS.keys()
+        self.colors = list(mcolors.TABLEAU_COLORS.keys())
         self.styles = ['-', (0, (1, 1)), (5, (10, 3)),
                        (0, (3, 1, 1, 1)), (0, (3, 10, 1, 10, 1, 10)), (5, (10, 3)),
                        (0, (3, 1, 1, 1, 1, 1)), (0, (3, 5, 1, 5, 1, 5)), (0, (5, 5))]
         self.markers = ['o', 's', 'X', 'H', 'v', '^', 'P', 'D', '8']
-        self.hatches = ['/', '\\', '|', '-', '+', 'x', 'o', '.', '*']
+        self.hatches = ['/', '\\', '||', '--', 'x', '++', 'o', '.', '*']
         
     def reset(self):
         self.indices = {}
@@ -167,8 +174,8 @@ class Styles:
         
     def assign(self, label):
         if label not in self.indices:
-            self.index[label] = np.min([i for i in range(self.n_options) if i not in 
-                                       self.indices.values()])
+            self.indices[label] = np.min([i for i in range(self.n_options) if i not in 
+                                          self.indices.values()])
         self.index = self.indices[label]
         self.label = label
         
@@ -187,6 +194,10 @@ class Styles:
     @property 
     def hatch(self):
         return self.hatches[self.index]
+    
+    @property 
+    def labels(self):
+        return list(self.indices.keys())
     
 
 class BasePlots:
@@ -373,7 +384,7 @@ class BasePlots:
         if self.fig_dir is not None:
             if not os.path.exists(self.fig_dir):
                 os.mkdir(self.fig_dir)
-            self.fig.savefig(self.fig_path, dpi=400, format='png')
+            self.fig.savefig(self.fig_path+'.png', dpi=400, format='png')
 
 class ConfidencePlots(BasePlots):
     """ 
@@ -779,7 +790,7 @@ class ReconstructionPlot(BasePlots):
         self.fig_name = fig_name
         self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
         self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
-                                 bottom=.1, top=.94)
+                                 bottom=.12, top=.94)
 
         # Plot xx
         ax = self.axes[0]
@@ -1020,7 +1031,7 @@ class CrpsPlots(BasePlots):
             ax.set_xlim(-.5, len(xps)-.5)
             ax.grid()
         for ax in self.axes[-1]:
-            ax.xaxis.set_tick_params(rotation=40)
+            ax.xaxis.set_tick_params(rotation=10)
             ax.set_xticklabels(xps)
 
         self.axes[-1, 0].legend(loc='upper left', framealpha=1.0)

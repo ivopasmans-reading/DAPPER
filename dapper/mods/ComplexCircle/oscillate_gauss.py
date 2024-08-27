@@ -9,251 +9,29 @@ error from Gaussian.
 @author: ivo
 """
 
-import tensorflow as tf
-import importlib
 import numpy as np
-import dapper.mods as modelling
-import dapper.da_methods as da
-import dapper.da_methods.ensemble as eda
-from dapper.mods import ComplexCircle as circle
-from dapper.mods.ComplexCircle import vae_plots as plots
-from dapper.vae import basic as vae
-from dapper.tools.seeding import set_seed
-import shutil
-import os
-import dill
-from datetime import datetime
-import scipy
-import random
-import keras
 import xarray as xr
+from climate import ClimaExperiment, VaeExperiment, XpsClass
+from climate import Nens, reset_random_seeds, run_model_default
+from dapper.vae import circle_vae as vae
+from dapper.mods.ComplexCircle import vae_plots as plots
+import os, dill, shutil
 
+climas = ClimaExperiment(0.0)
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/exp03a'
+FIG_DIR = '/home/ivo/Figures/vae/paper_oscillation'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
-# Number of ensemble member
-Nens = 64
 
 # Copy this file
 if __name__ == '__main__' and FIG_DIR is not None:
     shutil.copyfile(__file__, os.path.join(FIG_DIR, 'experiment.py'))
-
-def run_model(K, dko, seed, obs_type='normal', amplitude=0.2, sigo=.1):
-    """
-    Function that creates the model for this experiment
-    """
-
-    Dyn = {'M': 2, 'model': circle.step_factory(amplitude=amplitude),
-           'linear': circle.step_factory(amplitude=amplitude), 'noise': 0}
-
-    # Actual observation operator.
-    obs = circle.create_obs_factory([0], sigo, obs_type)
-    Obs = {'time_dependent': obs}
-
-    # Time steps
-    dt = 1
-    tseq = modelling.Chronology(dt=dt, K=K, dko=dko, Tplot=K*dt, BurnIn=0)
-
-    # State Space System setup.
-    circle.X0.seed = seed
-    HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, circle.X0)
-
-    # Run the model
-    reset_random_seeds(seed)
-    xx, yy = HMM.simulate()
-    climate = circle.data2pandas(xx)
-
-    return HMM, xx, yy
-
-
-def reset_random_seeds(seed):
-    """ Reset different seeds. """
-    os.environ['PYTHONHASHSEED'] = str(0)
-    tf.random.set_seed(seed)
-    keras.utils.set_random_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    circle.set_seed(seed)
-
-
-def compare_layers(m0, m1):
-    """ Compare if all NN weights are equal. """
-    for l0, l1 in zip(m0.encoder.layers, m1.encoder.layers):
-        for w0, w1 in zip(l0.get_weights(), l1.get_weights()):
-            if np.any(w0 != w1):
-                print(l0.name)
-
-    for l0, l1 in zip(m0.decoder.layers, m1.decoder.layers):
-        for w0, w1 in zip(l0.get_weights(), l1.get_weights()):
-            if np.any(w0 != w1):
-                print(l0.name)
-
-
-class VaeExperiment:
-    """ Base class representing single run of experiment. """
-
-    def save(self):
-        with open(self.filepath, 'wb') as stream:
-            dill.dump(self.data, stream)
-
-    def load(self):
-        with open(self.filepath, 'rb') as stream:
-            self.data = dill.load(stream)
-
-# %% Generate climatology
-
-class ClimaExperiment(VaeExperiment):
-    """ Run the climatology. """
-
-    def __init__(self, r_amplitude):
-        self.amplitude = r_amplitude
-
-    def reset(self):
-        self.seed = 1000
-
-    def __iter__(self):
-        self.reset()
-        return self
-
-    def __next__(self):
-        self.create_model(self.seed)
-
-        if os.path.exists(self.filepath):
-            self.load(self.filepath)
-        else:
-            self.hypermodel.fit(self.hp, self.model, self.xx,
-                                verbose=False, shuffle=True)
-            self.save(self.filepath)
-
-        self.plot_clima()
-
-        self.seed += 100
-        return self
-
-    @property
-    def filepath(self):
-        A = int(self.amplitude*100)
-        seed = int(self.seed)
-        return os.path.join(MODEL_PATH, f'clima_{A:02d}_{seed:04d}.pkl')
-
-    def create_model(self, seed):
-        """ Run the climatology and train VAE."""
-
-        # Generate climatology
-        self.HMM, self.xx, _ = run_model(10000, 1, seed, 
-                                         amplitude=self.amplitude)
-
-        # Create model
-        self.hypermodel = vae.DenseVae()
-        self.hp = self.hypermodel.build_hp(no_layers=6, no_nodes=32, 
-                                           use_rotation=False, batch_size=32, 
-                                           latent_dim=1, mc_samples=1)
-
-        self.seed = seed
-        reset_random_seeds(seed)
-        self.model = self.hypermodel.build(self.hp)
-
-    def save(self, filepath):
-        with open(filepath, 'wb') as stream:
-            dill.dump(self.model.get_weights(), stream)
-
-    def load(self, filepath):
-        with open(filepath, 'rb') as stream:
-            weights = dill.load(stream)
-        self.model.set_weights(weights)
-        for n,layer in enumerate(self.model.encoder.layers+self.model.decoder.layers):
-            print(n,layer.name)
-        
-        raise Exception('ok')
-
-    def plot_clima(self):
-        filepath = self.filepath
-        filepath = filepath.replace('.pkl', '.png')
-
-        # Sample encoder
-        dko = self.HMM.tseq.dko
-        samples = self.xx[::dko]
-        zz_mu, zz_sig, zz = self.model.encoder.predict([samples])
-        zz_sig = np.exp(.5*zz_sig)
-
-        # Sample decoder
-        z = np.random.normal(
-            size=(np.size(samples, 0), self.hp.get('latent_dim')))
-        zxx_mu, zxx_sig, zxx_angle, zxx = self.model.decoder.predict(z)
-        zxx_sig = np.exp(.5*zxx_sig)
-
-        # Plot distributions
-        plotReconstruction = plots.ReconstructionPlot(FIG_DIR)
-        plotReconstruction.add_samples(zxx, zz)
-        plotReconstruction.plot(filepath)
-        plotReconstruction.save()
-
-
-climas = ClimaExperiment(0.0)
-
+    
+climas = ClimaExperiment(0.0, do_plot=False)
+run_model = lambda K, dko, seed : run_model_default(K, dko, seed, 
+                                                    amplitude=0.2)
+    
 # %% Experiment oscillation
-
-class XpsClass:
-    """ Iterator over experiment. """
-
-    def __init__(self, clima, HMM, Nens, No):
-        self.names = ['no DA', 'ETKF', 'single-transfer', 'double-transfer',
-                        'single-clima','double-clima']
-        self.names = ['no DA', 'ETKF', 'single-transfer', 'single-clima',
-                      'double-clima','double-transfer']
-        self.hp = clima.hp
-        self.hypermodel = clima.hypermodel
-        self.model = clima.model
-        self.factory = eda.EndaFactory()
-        self.HMM = HMM
-        self.No = No
-        self.Nens = Nens
-
-    def __iter__(self):
-        self.names = iter(self.names)
-        return self
-
-    def __next__(self):
-        name = self.names.__next__()
-        if name is StopIteration:
-            return StopIteration
-        elif name == 'no DA':
-            xp = eda.EnDa(self.Nens, [], name='no DA')
-        elif name == 'ETKF':
-            xp = self.factory.build(
-                self.Nens, 'Sqrt svd', name='ETKF', rot=False)
-        elif name == 'single-transfer':
-            bkg_trans = eda.BackgroundVaeTransform(
-                self.hypermodel, self.hp, self.model)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='single-transfer',
-                                    VaeTransforms=[bkg_trans])
-        elif name == 'double-transfer':
-            bkg_trans = eda.BackgroundVaeTransform(
-                self.hypermodel, self.hp, self.model)
-            inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No,
-                                              self.HMM.Obs(0).noise.add_sample)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-transfer',
-                                    VaeTransforms=[inno_trans, bkg_trans])
-        elif name == 'double-cycle':
-            cycle_trans = eda.CyclingVaeTransform(
-                self.hypermodel, self.hp, None)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-cycle',
-                                    VaeTransforms=[cycle_trans])
-        elif name == 'single-clima':
-            vae_trans = eda.VaeTransform(self.hypermodel, self.hp, self.model)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='single-clima',
-                                    VaeTransforms=[vae_trans])
-        elif name == 'double-clima':
-            vae_trans = eda.VaeTransform(self.hypermodel, self.hp, self.model)
-            inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No,
-                                              self.HMM.Obs(0).noise.add_sample)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-clima',
-                                    VaeTransforms=[inno_trans, vae_trans])
-        else:
-            raise ValueError(f'{name} not a valid name for experiment.')
-
-        return xp
 
 class OscillateExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle with varying radius. """
@@ -367,38 +145,41 @@ exp = OscillateExperiment(49, 10)
 exp.load()
 exp.run()
 
-# %% Plot output statistics.
+#%% Plot output statistics.
 
-# Remove faulty 1200<=seed<1300
+#Remove faulty 1200<=seed<1300
 def filter_data(data):
     seeds = data.coords['seed']
-    seeds = [s for s in seeds if s < 1200 or s >= 1300]
-    return data.sel(seed=seeds)
+    seeds = [s for s in seeds if s<1200 or s>=1300]
+    return data.sel(seed=seeds) 
 
-for stage, data in zip(['forecast', 'analysis'], [exp.data_for, exp.data_ana]):
-
+for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
     plot_data = filter_data(data['histogram'])
     plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
     plotHist.plot_scatter_density('scatter_'+stage)
     plotHist.save()
     
-    plot_data = filter_data(data['histogram'])
-    plotHist = plots.ErrorProbDensityPlots(FIG_DIR, plot_data)
-    plotHist.plot_scatter_density('error_scatter_'+stage)
-    plotHist.save()
-
     plot_data = filter_data(data['crps'])
     plotHist = plots.CrpsPlots(FIG_DIR, plot_data)
     plotHist.plot_crps('crps_'+stage)
     plotHist.save()
-
+    
     plot_data = filter_data(data['rmse'])
     plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
+    plotHist = plots.set_styles(plotHist)
     plotHist.plot_taylor('taylor_'+stage)
+
     plotHist.save()
     
     plot_data = filter_data(data['crps'])
     plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
+    plotHist = plots.set_styles(plotHist)
+    plotHist.plot_crps('crps_single_'+stage)
+    plotHist.save()
+    
+    plot_data = filter_data(data['crps'])
+    plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
+    plotHist = plots.set_styles(plotHist)
     plotHist.plot_crps('crps_single_'+stage)
     plotHist.save()
 

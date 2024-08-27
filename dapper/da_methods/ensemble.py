@@ -30,7 +30,7 @@ class EnProcessor:
     
     def __init__(self, **kwargs):
         """ Class constructor. """
-        self.options =kwargs
+        self.options = kwargs
     
     def pre(self, k, ko, y, E, Y, D):
         """ Function to be called on background ensemble."""
@@ -56,6 +56,8 @@ class EnProcessor:
         """ Indicate whether processor should be used in this step."""
         return ko is not None
     
+    def clean(self):
+        """ Clean memory associated with this process."""
 #----------------------------------------------------------------------
         
 class ControlCovariance(EnProcessor):
@@ -326,15 +328,16 @@ class VaeTransform(EnProcessor):
         self.train(E, D)
         
         #Convert background ensemble in state space to latent space. 
-        _, _, E = self.model.encoder.predict(E, verbose=0) 
+        _, _, E = self.model.encoder.predict(E, verbose=self.hp.get('verbose')) 
         E = np.array(E)
         
-        #Save latent ensemble. 
-        if not hasattr(self.stats,'Elatent'):
+        #Save latent ensemble
+        save_latent = True
+        if not hasattr(self.stats,'Elatent') and save_latent:
             self.stats.Elatent = {}
             self.stats.Elatent['f'] = E.reshape((1,)+E.shape)
             self.stats.Elatent['a'] = np.empty((0,)+E.shape)
-        else:
+        elif save_latent:
             self.stats.Elatent['f'] = np.concatenate((self.stats.Elatent['f'],
                                                       E[None,...]), axis=0)
         
@@ -343,9 +346,10 @@ class VaeTransform(EnProcessor):
     def post(self, k, ko, y, E, Y, D):
         from dapper.vae.basic import rotate        
         
-        #Save for inspection. 
-        self.stats.Elatent['a'] = np.concatenate((self.stats.Elatent['a'],
-                                                  E[None,...]), axis=0)
+        #Save for inspection.
+        if hasattr(self.stats,'Elatent'):
+            self.stats.Elatent['a'] = np.concatenate((self.stats.Elatent['a'],
+                                                      E[None,...]), axis=0)
         
         #Convert latent background ensemble to state space. 
         _, _, _, E = self.model.decoder.predict(E, verbose=False) 
@@ -355,6 +359,7 @@ class VaeTransform(EnProcessor):
         
     def train(self, E, D):
         pass
+    
     
 class CyclingVaeTransform(VaeTransform):
     """ 
@@ -428,8 +433,11 @@ class BackgroundVaeTransform(VaeTransform):
         layer.bias.assign(layer.bias - Zmean)
         
         #Train weights. 
+        print('BKG FIT')
         history = self.hypermodel.fit(self.hp, self.model, E, 
                                       verbose=self.hp.get('verbose'))
+        print('END BKG FIT')
+        
         
 class InnoVaeTransform(VaeTransform):   
     """
@@ -443,9 +451,11 @@ class InnoVaeTransform(VaeTransform):
         self.ref_model = model
         self.error_sample = error_sample
         self.model = None
+        self.previous_M = 0
         
     def pre(self, k, ko, y, E, Y, D):
         from matplotlib import pyplot as plt 
+
         
         Y0 = Y+0
         D0 = D+0
@@ -476,11 +486,11 @@ class InnoVaeTransform(VaeTransform):
         M = self.HMM.ObsNow.M
         
         #Create new on if input size does not match number observations
-        if self.model is None or M != self.hp.get('state_dim'):
+        if self.model is None or M != self.previous_M:
             hp = self.hypermodel.build_hp(self.hp, state_dim=M,
                                           architecture='inno')
+            self.previous_M = M
             self.model = self.hypermodel.build(hp) 
-            
             
         if self.hp.get('verbose'):
             print('INNO training')
@@ -525,8 +535,10 @@ class InnoVaeTransform(VaeTransform):
         #Train weights
         lr_init = self.hp.values['lr_init']*5e-2
         self.model.optimizer.learning_rate.assign(lr_init)
+        print('INNO FIT')
         history = self.hypermodel.fit(self.hp, self.model, D, 
-                                      verbose=True) #self.hp.get('verbose'))
+                                      verbose=self.hp.get('verbose'))
+        print('END INNO FIT')
         
 #----------------------------------------------------------------------
 
@@ -1218,6 +1230,11 @@ class EnDa:
 
             if ko is not None:
                 self.stats.assess(k, ko, E=E)
+                
+    def clean(self):
+        """ Clean memory associated with processes. """
+        for processor in self.processors:
+            processor.clean()
    
    
 class EndaFactory:
