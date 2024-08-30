@@ -27,7 +27,7 @@ import pickle as pkl
 # Directory containing files downloaded from Hadley server.
 DIR = "<topdir /media/ivo/backup/hadley_et4containing files downloaded from server or containing dirs with those files>"
 DIR = '/media/ivo/backup/hadley_et4'
-FILE_NAME = 'boxed_hadley_inverted0422.pkl'
+FILE_NAME = 'boxed_hadley_inverted0828.pkl'
 # Earth radius
 EARTH_RADIUS = 6.3781e6  # m
 #SECONDS IN YEAR
@@ -605,15 +605,15 @@ def average_cluster(data, indices):
     
     # Observed fields.
     for field in ['temperature', 'salinity']:
-        w = data3d['volume'] / data3d[field+'_uncertainty']**2
-        data3d[field] = (data3d[field] * w).mean('ind3d') / w.mean('ind3d')
-        data3d[field +'_uncertainty'] = (data3d['volume'].mean('ind3d') / w.mean('ind3d'))**0.5
+        w = data3d['volume'] 
+        data3d[field] = (data3d[field] * w).sum('ind3d') / w.sum('ind3d')
+        data3d[field +'_uncertainty'] = ((data3d[field + '_uncertainty']**2 * w).sum('ind3d') / w.sum('ind3d'))**.5
         output = {**output, field: data3d[field], field +
                   '_uncertainty': data3d[field+'_uncertainty']}
 
     # Depth
     data3d['depth'] = (data3d['depth']*data3d['volume']
-                       ).mean('ind3d') / data3d['volume'].mean('ind3d')
+                       ).sum('ind3d') / data3d['volume'].sum('ind3d')
     output = {**output, 'depth': data3d['depth']}
 
     # Volume
