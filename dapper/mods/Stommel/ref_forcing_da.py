@@ -16,7 +16,7 @@ import shutil
 
 plt.close('all')
 
-fig_dir = stommel.fig_dir+'/Hdiff'
+fig_dir = stommel.fig_dir+'/equal_volume'
 shutil.copy(__file__, fig_dir) 
 
 def exp_ref_forcing_da(N=100, seed=1000):
@@ -74,7 +74,7 @@ def exp_ref_forcing_da(N=100, seed=1000):
            'noise': 0
            }
     # Observation
-    Obs = model.obs_hadley_diff(factor=np.array([1.,1.]))
+    Obs = model.obs_hadley(factor=np.array([1.,1.,1.,1.]))
     # Create model.
     HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, X0)
     # Create DA
@@ -87,10 +87,6 @@ if __name__ == '__main__':
     # Run
     xx, yy = HMM.simulate()
     yy = hadley['yy'][HMM.tseq.kko]
-    
-    yy = np.squeeze( np.diff(yy.reshape((-1,2,2)), axis=-1) )
-    print('YY',np.shape(yy))
-    
     Efor, Eana = xp.assimilate(HMM, xx, yy)
          
     

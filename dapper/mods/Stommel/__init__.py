@@ -31,15 +31,11 @@ if not os.path.exists(hadley_file):
 with open(hadley_file, 'rb') as stream:
     hadley = pkl.load(stream)
     
-    #dy = .5*hadley['geo_pole']['dy'] + .5*hadley['geo_eq']['dy']
-    #hadley['geo_pole']['dy'], hadley['geo_eq']['dy'] = dy, dy
-    #hadley['geo_pole']['dz'], hadley['geo_eq']['dz'] = 4.2e3, 4.2e3
+    dy = .5*hadley['geo_pole']['dy'] + .5*hadley['geo_eq']['dy']
+    hadley['geo_pole']['dy'], hadley['geo_eq']['dy'] = dy, dy
+    hadley['geo_pole']['dz'], hadley['geo_eq']['dz'] = 4.2e3, 4.2e3
     ref = hadley['yy'][0] #np.mean(hadley['yy'], axis=0)
-    
-    #hadley['yy'][:,0] = hadley['yy'][0,0]
-    #hadley['yy'][:,1] = hadley['yy'][0,1]
-    #hadley['yy'][:,2] = hadley['yy'][0,2]
-    #hadley['yy'][:,3] = hadley['yy'][0,3]
+
     cross_area = 0.5*(hadley['geo_pole']['dx'] * hadley['geo_pole']['dz'] +
                       hadley['geo_eq']['dx'] * hadley['geo_eq']['dz'])
 
