@@ -10,18 +10,19 @@ from scipy.interpolate import interp1d
 from copy import copy 
 import os
 import pickle as pkl
+from dapper.mods.Stommel import hadley
 
 #Import HADLEY data 
-DIR = "/home/ggorblin/Downloads/analysis/EN.4.2.2.analyses.g10.2019"
-with open(os.path.join(DIR,'yy.pkl'), 'rb') as stream:
-    hadley = pkl.load(stream)
+#DIR = "/home/ggorblin/Downloads/analysis/EN.4.2.2.analyses.g10.2019"
+#with open(os.path.join(DIR,'yy.pkl'), 'rb') as stream:
+#    hadley = pkl.load(stream)
 
 def exp_clima_forcing_da(N=100, seed=1000):
     #Time period for DA
     Tda = 20 * stommel.year #time period over which DA takes place. 
-    kko = np.arange(1, len(hadley['yy'])+1)
+    kko = [] #np.arange(1, len(hadley['yy'])+1)
     tseq = modelling.Chronology(stommel.year/12, kko=kko, 
-                                T=50*stommel.year, BurnIn=0)  # 1 observation/month
+                                T=10*stommel.year, BurnIn=0)  # 1 observation/month
     T_warming=100*stommel.year
     # Timestepping. Timesteps of 1 day, running for 200 year.
     #Create model

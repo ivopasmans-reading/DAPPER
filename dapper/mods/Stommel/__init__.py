@@ -16,10 +16,13 @@ from copy import copy
 
 #Directory to store figures. 
 fig_dir = "<dir for storing figures>"
-fig_dir = "/home/oceancirculation059/new_dpr_data_inversion/figs"
 DIR = "<topdir containing files downloaded from server or containing dirs with those files>"
-DIR = '/home/oceancirculation059/new_dpr_data_inversion/obs'
-FILE_NAME = 'boxed_hadley_inverted.pkl'
+
+fig_dir = '/home/ivo/Figures/stommel/hadley0830'
+DIR = '/home/ivo/dpr_data/stommel'
+FILE_NAME = 'boxed_hadley_inverted0830.pkl'
+
+
 hadley_file = os.path.join(DIR, FILE_NAME)
 if not os.path.exists(hadley_file):
     raise FileExistsError("Generate a file with Hadley EN4 output using tools/hadley_obs.")
@@ -27,7 +30,16 @@ if not os.path.exists(hadley_file):
 #Import values based on Hadley EN4 observations. 
 with open(hadley_file, 'rb') as stream:
     hadley = pkl.load(stream)
+    
+    #dy = .5*hadley['geo_pole']['dy'] + .5*hadley['geo_eq']['dy']
+    #hadley['geo_pole']['dy'], hadley['geo_eq']['dy'] = dy, dy
+    #hadley['geo_pole']['dz'], hadley['geo_eq']['dz'] = 4.2e3, 4.2e3
     ref = hadley['yy'][0] #np.mean(hadley['yy'], axis=0)
+    
+    #hadley['yy'][:,0] = hadley['yy'][0,0]
+    #hadley['yy'][:,1] = hadley['yy'][0,1]
+    #hadley['yy'][:,2] = hadley['yy'][0,2]
+    #hadley['yy'][:,3] = hadley['yy'][0,3]
     cross_area = 0.5*(hadley['geo_pole']['dx'] * hadley['geo_pole']['dz'] +
                       hadley['geo_eq']['dx'] * hadley['geo_eq']['dz'])
 
@@ -425,7 +437,7 @@ class StommelModel:
     #Ensemble member 
     _ens_member = 0
     #Fluxes 
-    fluxes = []
+    fluxes : list = dataclasses.field(default_factory=lambda: [])
     
     @property 
     def ens_member(self):
@@ -441,12 +453,14 @@ class StommelModel:
     
     def __post_init__(self):
         """Part of object initialization to be carried out after __init__ provided by dataclass."""
-        self.init_state.gamma = self.default_gamma(self.init_state)
-        self.state.gamma = self.default_gamma(self.state)
+        #self.init_state.gamma = self.default_gamma(self.init_state)
+        #self.state.gamma = self.default_gamma(self.state)
         
-        self.init_state = self.default_parameters(self.init_state, Q_overturning)
+        self.init_state.temp = np.array([[2.57,9.09]])
+        self.init_state.salt = np.array([[34.738,35.455]])
+        self.init_state = self.default_parameters1(self.init_state, Q_overturning)
         self.state = copy(self.init_state)
-        self.fluxes = self.default_fluxes()
+        self.fluxes = self.default_fluxes(self.fluxes) 
         
     def default_gamma(self, state, Q=Q_overturning):
         """Reverse engineer advective flux coefficient gamma using temperature/salinity fields in state
@@ -464,7 +478,50 @@ class StommelModel:
         gamma = Q / (A * drho/rho0) 
         return np.log(gamma)
     
-    def default_parameters(self, state, Q=Q_overturning):
+    def default_parameters3(self, state, Q=Q_overturning):
+        from scipy.optimize import minimize
+        
+        state.gamma = self.default_gamma(state, Q)
+        T = np.diff(state.temp).flatten()
+        S = np.diff(state.salt).flatten()
+        
+        def equi(params):
+            state.temp_diff=params[0]; state.salt_diff=params[1]
+            state.gamma = params[2]
+            
+            trans_eq = self.trans_eq(state)
+            temp_eq  = self.temp_eq(state, trans_eq)
+            salt_eq  = self.salt_eq(state, trans_eq)
+            m        = np.argmax(trans_eq)
+            
+            cost  = 0.5*(T - temp_eq[m])**2 / (.4**2+.4**2)
+            cost += 0.5*(S - salt_eq[m])**2 / (.06**2+.07**2)
+            cost += 0.5*(Q*1e-6 - trans_eq[m]*1e-6)**2 / 2.5**2
+            
+            return cost
+        
+        #Initial guess
+        params0 = np.log(np.array([1e-5,1e-6,self.default_gamma(state,Q)]))
+        state.temp_diff=params0[0] 
+        state.salt_diff=params0[1]
+        state.gamma = params0[2]
+        
+        minimizer = minimize(equi, params0, method='Nelder-Mead')
+        
+        state.temp_diff = minimizer.x[0]
+        state.salt_diff = minimizer.x[1]
+        state.gamma = minimizer.x[2]
+        
+        trans_eq = self.trans_eq(state)
+        temp_eq = self.temp_eq(state, trans_eq)
+        salt_eq = self.salt_eq(state, trans_eq)
+        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
+        #state.salt[0] = np.mean(state.salt[0]) + np.array([-.5,.5]) * salt_eq 
+        #state.temp[0] = np.mean(state.temp[0]) + np.array([-.5,.5]) * temp_eq 
+        
+        return state
+    
+    def default_parameters2(self, state, Q=Q_overturning):
         """ Find parameter values such that current state is an equilibrium
         with transport Q. """
         from scipy.optimize import minimize
@@ -481,22 +538,50 @@ class StommelModel:
             salt_eq  = self.salt_eq(state, trans_eq)
             m        = np.argmax(trans_eq)
             
-            cost  = 0.5*(T - temp_eq[m])**2 / T**2
-            cost += 0.5*(S - salt_eq[m])**2 / S**2
+            cost  = 0.5*(T - temp_eq[m])**2 
+            cost += 0.5*(S - salt_eq[m])**2 
             
             return cost
         
+        
         #Initial guess
         params0 = np.log(np.array([1e-5,1e-6]))
-        minimizer = minimize(equi, params0)
+        state.temp_diff=params0[0] 
+        state.salt_diff=params0[1]
         
-        state.temp_diff, state.salt_diff = minimizer.x[0], minimizer.x[1]
+        minimizer = minimize(equi, params0, method='Nelder-Mead')
         
+        state.temp_diff = minimizer.x[0]
+        state.salt_diff = minimizer.x[1]
+        
+        trans_eq = self.trans_eq(state)
+        temp_eq = self.temp_eq(state, trans_eq)
+        salt_eq = self.salt_eq(state, trans_eq)
+        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
+
+        return state
+    
+    def default_parameters1(self, state, Q=Q_overturning):
+        """ Find parameter values such that current state is an equilibrium
+        with transport Q. """
+        
+        state.gamma = self.default_gamma(state, Q)
+        
+        #Initial guess
+        params0 = np.log(np.array([1e-5,1e-6]))
+        state.temp_diff=params0[0] 
+        state.salt_diff=params0[1]
+
+        trans_eq = self.trans_eq(state)
+        temp_eq = self.temp_eq(state, trans_eq)
+        salt_eq = self.salt_eq(state, trans_eq)
+        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
+
         return state
 
-    def default_fluxes(self):
+    def default_fluxes(self, fluxes):
         """Set default fluxes."""
-        return [AdvectiveFlux(self.eos)]
+        return [AdvectiveFlux(self.eos)] + fluxes
     
     def obs_hadley(self, factor=1):
         #Size of observations.
@@ -523,6 +608,36 @@ class StommelModel:
         Obs = {'M':M, 'model': obs_model, 'linear': sample2linear(obs_model),
                'noise': modelling.GaussRV(C=hadley['R']*factor, 
                                           mu=np.zeros_like(hadley['R']))}
+        
+        return Obs
+    
+    def obs_hadley_diff(self, factor=1):
+        #Size of observations.
+        M = np.size(self.dz, 1)
+        
+        #Function for taking a observation from single state. 
+        def obs_TS1(x, t):
+            self.state.time = t
+            self.state.from_vector(x)
+            return np.append(np.diff(self.state.temp[0]), 
+                             np.diff(self.state.salt[0]))
+        
+        #Function for taking observation from ensemble of states. 
+        def obs_model(x, t):            
+            if np.ndim(x)==1:
+                return obs_TS1(x, t)
+            elif np.ndim(x)==2:
+                return np.array([obs_TS1(x1,t) for x1 in x])
+            else:
+                msg = "x must be 1D or 2D array."
+                raise TypeError(msg)
+          
+        
+        #DAPPER Observation operator
+        R = np.sum(hadley['R'].reshape((2,2)), axis=0)
+        Obs = {'M':M, 'model': obs_model, 'linear': sample2linear(obs_model),
+               'noise': modelling.GaussRV(C=R*factor, 
+                                          mu=np.zeros_like(R))}
         
         return Obs
     
@@ -686,10 +801,10 @@ class StommelModel:
     def trans_eq(self, state):
         """Meriodional transport pole->equator in equilibrium in m3."""  
         
-        #Roots positive flow 
-        f0 = np.polynomial.Polynomial((0,1))
-        f1 = np.polynomial.Polynomial((1,1))
-        f2 = np.polynomial.Polynomial((self.eta3(state),1))
+        #Roots positive flow        
+        f0 = np.polynomial.Polynomial((0,1)) #psi
+        f1 = np.polynomial.Polynomial((1,1)) #psi+1
+        f2 = np.polynomial.Polynomial((self.eta3(state),1)) #psi+eta_3
        
         fp = f0*f1*f2 - self.eta1(state) * f2 + self.eta2(state) * f1
         roots = [np.real(r) for r in np.round(poly3_roots(fp),6) if (np.imag(r)==0 and np.real(r)>=0)]              
@@ -726,6 +841,7 @@ def hadley_air_temp(N):
     """ Perturbed air temperature. """
     def func(t):
         values  = hadley['surface_temperature_harmonic'][0] + 0. #0. to copy array!
+        
         for omega, coef  in zip(hadley['harmonic_angular'], hadley['surface_temperature_harmonic'][1::2]):
             values += coef * np.cos(omega * t)
         for omega, coef  in zip(hadley['harmonic_angular'], hadley['surface_temperature_harmonic'][2::2]):
@@ -738,6 +854,7 @@ def hadley_air_salt(N):
     """ Perturbed air salinity. """
     def func(t):
         values  = hadley['surface_salinity_harmonic'][0] + 0. #0. to copy array
+        
         for omega, coef  in zip(hadley['harmonic_angular'], hadley['surface_salinity_harmonic'][1::2]):
             values += coef * np.cos(omega * t)
         for omega, coef  in zip(hadley['harmonic_angular'], hadley['surface_salinity_harmonic'][2::2]):

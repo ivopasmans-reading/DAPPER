@@ -27,7 +27,7 @@ import pickle as pkl
 # Directory containing files downloaded from Hadley server.
 DIR = "<topdir /media/ivo/backup/hadley_et4containing files downloaded from server or containing dirs with those files>"
 DIR = '/media/ivo/backup/hadley_et4'
-FILE_NAME = 'boxed_hadley_inverted0828.pkl'
+FILE_NAME = 'boxed_hadley_inverted0830.pkl'
 # Earth radius
 EARTH_RADIUS = 6.3781e6  # m
 #SECONDS IN YEAR
@@ -242,8 +242,8 @@ class StommelClusterer:
         """ Select grid points in North-Atlantic. """
         
         #Rough outline of North-Atlantic
-        points = [(23.5,-80.),(80,-80), (80,20), (70,20),
-                  (58.5,-7.35), (35.,-8.), (23.5, -8.)]
+        points = [(-23.5,-80.),(80,-80), (80,20), (70,20),
+                  (58.5,-7.35), (35.,-8.), (-23.5, -80.)]
         
         poly = shapely.Polygon(points)
 
@@ -289,7 +289,7 @@ class StommelClusterer:
         # Return distance.
         return dlat**2 + dlon**2 * mlat**2
     
-    def cluster_by_inversion(self, indices, min_depth=2e3):
+    def cluster_by_inversion(self, indices, min_depth=1.5e3): #IP2e3
         """ Divide profiles based on temperature inversion surface. """
         from sklearn.pipeline import Pipeline
         from sklearn.impute import KNNImputer, SimpleImputer
@@ -498,7 +498,7 @@ class StommelClusterer:
                 z1 = self.data['depth'][iz1]
                 if mask1 and iz1<=0:
                     clusters[0] += [(iz1,iy1,ix1)]
-                elif mask1 and z1<np.inf:
+                elif mask1 and z1 < 1.5e3: #np.inf:
                     clusters[1] += [(iz1,iy1,ix1)]
 
         # Return lists of indices for each cluster.

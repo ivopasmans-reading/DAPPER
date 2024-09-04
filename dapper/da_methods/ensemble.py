@@ -242,6 +242,10 @@ def post_process(E, infl, rot):
     - to avoid inflating/rotationg smoothed states (for the `EnKS`).
     """
     do_infl = infl != 1.0 and infl != '-N'
+    
+    infl = np.array(infl)
+    infl = np.ones((np.size(E,-1),)) * infl if np.ndim(infl)==0 else infl
+    infl = infl.reshape( (1,)*(np.ndim(E)-1) + (-1,) )
 
     if do_infl or rot:
         A, mu  = center(E)
@@ -249,7 +253,7 @@ def post_process(E, infl, rot):
         T      = eye(N)
 
         if do_infl:
-            T = infl * T
+            A *= infl
 
         if rot:
             T = genOG_1(N, rot) @ T
