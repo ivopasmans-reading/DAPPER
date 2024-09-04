@@ -16,7 +16,7 @@ import shutil
 
 plt.close('all')
 
-fig_dir = stommel.fig_dir+'/equal_volume'
+fig_dir = stommel.fig_dir+'/default'
 shutil.copy(__file__, fig_dir) 
 
 def exp_ref_forcing_da(N=100, seed=1000):
@@ -78,7 +78,7 @@ def exp_ref_forcing_da(N=100, seed=1000):
     # Create model.
     HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, X0)
     # Create DA
-    xp = EnKF('Sqrt', N, infl=[1.01]*4+[1.0]*3)
+    xp = EnKF('Sqrt', N, infl=[1.02]*4+[1.01]*3)
     return xp, HMM, model
 
 if __name__ == '__main__':
