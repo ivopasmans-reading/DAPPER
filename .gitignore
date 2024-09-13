@@ -164,3 +164,4 @@ dapper/mods/QG/f90/prms_*\.txt
 .project
 .pydevproject
 dapper-env
+*.pkl
