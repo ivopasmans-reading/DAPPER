@@ -180,6 +180,8 @@ class Chronology():
         
     @property
     def dko(self):
+        if len(self.kko)==0:
+            return np.nan
         if np.all( np.mod(self.kko, self.kko[0])==0 ):
             return self.kko[0]
         else:

@@ -22,7 +22,7 @@ def exp_clima_forcing_da(N=100, seed=1000):
     Tda = 20 * stommel.year #time period over which DA takes place. 
     kko = [] #np.arange(1, len(hadley['yy'])+1)
     tseq = modelling.Chronology(stommel.year/12, kko=kko, 
-                                T=10*stommel.year, BurnIn=0)  # 1 observation/month
+                                T=100*stommel.year, BurnIn=0)  # 1 observation/month
     T_warming=100*stommel.year
     # Timestepping. Timesteps of 1 day, running for 200 year.
     #Create model

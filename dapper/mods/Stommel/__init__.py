@@ -17,10 +17,7 @@ from copy import copy
 #Directory to store figures. 
 fig_dir = "<dir for storing figures>"
 DIR = "<topdir containing files downloaded from server or containing dirs with those files>"
-
-fig_dir = '/home/ivo/Figures/stommel/hadley0830'
-DIR = '/home/ivo/dpr_data/stommel'
-FILE_NAME = 'boxed_hadley_inverted0830.pkl'
+FILE_NAME = 'boxed_hadley_inverted0906.pkl'
 
 
 hadley_file = os.path.join(DIR, FILE_NAME)
@@ -32,7 +29,7 @@ with open(hadley_file, 'rb') as stream:
     hadley = pkl.load(stream)
     #dy = .5*hadley['geo_pole']['dy'] + .5*hadley['geo_eq']['dy']
     #hadley['geo_pole']['dy'], hadley['geo_eq']['dy'] = dy, dy
-    #hadley['geo_pole']['dz'], hadley['geo_eq']['dz'] = 4.2e3, 4.2e3
+    #hadley['geo_pole']['dz'], hadley['geo_eq']['dz'] = 1.5e3, 1.5e3
     
     ref = hadley['yy'][0] #np.mean(hadley['yy'], axis=0)
 
@@ -449,12 +446,10 @@ class StommelModel:
     
     def __post_init__(self):
         """Part of object initialization to be carried out after __init__ provided by dataclass."""
-        #self.init_state.gamma = self.default_gamma(self.init_state)
-        #self.state.gamma = self.default_gamma(self.state)
         
-        self.init_state.temp = np.array([[2.57,9.09]])
-        self.init_state.salt = np.array([[34.738,35.455]])
-        self.init_state = self.default_parameters1(self.init_state, Q_overturning)
+        self.init_state.temp = np.array([hadley['yy'][0,0:2]])
+        self.init_state.salt = np.array([hadley['yy'][0,2:4]])
+        self.init_state = self.default_parameters3(self.init_state, Q_overturning)
         self.state = copy(self.init_state)
         self.fluxes = self.default_fluxes(self.fluxes) 
         
@@ -511,9 +506,7 @@ class StommelModel:
         trans_eq = self.trans_eq(state)
         temp_eq = self.temp_eq(state, trans_eq)
         salt_eq = self.salt_eq(state, trans_eq)
-        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
-        #state.salt[0] = np.mean(state.salt[0]) + np.array([-.5,.5]) * salt_eq 
-        #state.temp[0] = np.mean(state.temp[0]) + np.array([-.5,.5]) * temp_eq 
+        print('Initial Q, diff T, diff S',trans_eq*1e-6, temp_eq, salt_eq)
         
         return state
     
@@ -553,13 +546,12 @@ class StommelModel:
         trans_eq = self.trans_eq(state)
         temp_eq = self.temp_eq(state, trans_eq)
         salt_eq = self.salt_eq(state, trans_eq)
-        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
+        print('Initial Q, diff T, diff S',trans_eq*1e-6, temp_eq, salt_eq)
 
         return state
     
     def default_parameters1(self, state, Q=Q_overturning):
-        """ Find parameter values such that current state is an equilibrium
-        with transport Q. """
+        """ Set parameters.  """
         
         state.gamma = self.default_gamma(state, Q)
         
@@ -571,7 +563,7 @@ class StommelModel:
         trans_eq = self.trans_eq(state)
         temp_eq = self.temp_eq(state, trans_eq)
         salt_eq = self.salt_eq(state, trans_eq)
-        print('EQ ',trans_eq*1e-6, temp_eq, salt_eq)
+        print('Initial Q, diff T, diff S',trans_eq*1e-6, temp_eq, salt_eq)
 
         return state
 

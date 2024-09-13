@@ -16,15 +16,16 @@ import shutil
 
 plt.close('all')
 
-fig_dir = stommel.fig_dir+'/default'
+fig_dir = stommel.fig_dir+'/default3_4000'
 shutil.copy(__file__, fig_dir) 
 
-def exp_ref_forcing_da(N=100, seed=1000):
+def exp_ref_forcing_da(N=100, seed=1100):
+    #Set seed
     np.random.seed(seed)
     # Timestepping. Timesteps of 1 day, running for 200 year.
-    kko = np.arange(1, len(hadley['yy'][1:]))
+    kko = np.arange(1, len(hadley['yy'][1:])+1)
     tseq = modelling.Chronology(stommel.year/12, kko=kko,
-                                T=19*stommel.year)  # 1 observation/month
+                                T=20*stommel.year)  # 1 observation/month
     
     
     # Switch on heat exchange with atmosphere.
@@ -37,17 +38,40 @@ def exp_ref_forcing_da(N=100, seed=1000):
     x0 = model_ref.x0
     
     # Add additional periodic forcing
-    temp_forcings, salt_forcings = stommel.budd_forcing(model_ref, model_ref.init_state, 86., 0.0,
-                                                        stommel.Bhat(0.0, 0.0), 0.00) 
-    temp_forcings, salt_forcings = temp_forcings * N, salt_forcings * N
-    temp_forcings = [stommel.add_functions(f0, f1) for f0, f1 
-                     in zip(default_temps, temp_forcings)]
-    salt_forcings = [stommel.add_functions(f0, f1) for f0, f1 
-                     in zip(default_salts, salt_forcings)]
+    # temp_forcings, salt_forcings = stommel.budd_forcing(model_ref, model_ref.init_state, 86., 0.0,
+    #                                                     stommel.Bhat(0.0, 0.0), 0.00) 
+    # temp_forcings, salt_forcings = temp_forcings * N, salt_forcings * N
+    # temp_forcings = [stommel.add_functions(f0, f1) for f0, f1 
+    #                  in zip(default_temps, temp_forcings)]
+    # salt_forcings = [stommel.add_functions(f0, f1) for f0, f1 
+    #                  in zip(default_salts, salt_forcings)]
+    temp_forcings = default_temps
+    salt_forcings = default_salts
     
-    model = stommel.StommelModel(fluxes=[stommel.TempAirFlux(default_temps),
-                                         stommel.SaltAirFlux(default_salts)])
+    #Melt flux 
+    T_melt, T_da = 4000.*stommel.year, 19.*stommel.year
+    melt_rate = -stommel.V_ice * np.array([1.0/(model_ref.dx[0,0]*model_ref.dy[0,0]), 0.0]) / T_melt #ms-1
+    #Default evaporation-percipitation flux (=0)
+    ep_forcings= stommel.default_air_ep(N)
+    #Add effect Greenland melt with annual rate melt_rate
+    def add_melting(func):
+        def func_with_melt(t):
+            if t<T_da:
+                return func(t)
+            elif t<T_da+T_melt:
+                return func(t) + melt_rate
+            else:
+                return func(t)
+            
+        return func_with_melt
     
+    ep_forcings = [add_melting(func) for func in ep_forcings]
+    
+    #Create model
+    model = stommel.StommelModel(fluxes=[stommel.TempAirFlux(temp_forcings),
+                                         stommel.SaltAirFlux(salt_forcings),
+                                         stommel.EPFlux(ep_forcings)])
+    x0 = model.x0
    
     # Variance Ocean temp[2], ocean salinity[2], temp diffusion parameter,
     # salt diffusion parameter, transport parameter
@@ -78,7 +102,7 @@ def exp_ref_forcing_da(N=100, seed=1000):
     # Create model.
     HMM = modelling.HiddenMarkovModel(Dyn, Obs, tseq, X0)
     # Create DA
-    xp = EnKF('Sqrt', N, infl=[1.02]*4+[1.01]*3)
+    xp = EnKF('Sqrt', N, infl=[1.0]*4+[1.01]*3)
     return xp, HMM, model
 
 if __name__ == '__main__':
@@ -155,11 +179,11 @@ if __name__ == '__main__':
             ax1.grid('on')
             if ('[ms-1]' in label1):
                 e1 = np.exp(e1)
-            ax1.plot(HMM.tseq.kk, e1, 'b-')
+            ax1.plot(HMM.tseq.times/stommel.year, e1, 'b-')
             
                 
         for ax1, y1 in zip(ax,hadley['yy'].transpose((1,0))):
-            ax1.plot(HMM.tseq.kko, y1[1:-1], 'k.')
+            ax1.plot(HMM.tseq.times[HMM.tseq.kko]/stommel.year, y1[1:], 'k.')
     fig.savefig(os.path.join(fig_dir,'states.png'),format='png',dpi=300)
     
     #Save 1st and last analysis

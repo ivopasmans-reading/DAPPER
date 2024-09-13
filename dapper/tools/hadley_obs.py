@@ -26,14 +26,13 @@ import pickle as pkl
 
 # Directory containing files downloaded from Hadley server.
 DIR = "<topdir /media/ivo/backup/hadley_et4containing files downloaded from server or containing dirs with those files>"
-DIR = '/media/ivo/backup/hadley_et4'
-FILE_NAME = 'boxed_hadley_inverted0830.pkl'
+FILE_NAME = 'boxed_hadley_inverted0906.pkl'
 # Earth radius
 EARTH_RADIUS = 6.3781e6  # m
 #SECONDS IN YEAR
 YEAR = 365.25 * 86400 #s
 #Size used to read in Hadley data. 
-CHUNCK_SIZE = "1GB"
+CHUNCK_SIZE = "2GB"
 
 def kelvin2celsius(temp):
     """
@@ -242,8 +241,11 @@ class StommelClusterer:
         """ Select grid points in North-Atlantic. """
         
         #Rough outline of North-Atlantic
-        points = [(-23.5,-80.),(80,-80), (80,20), (70,20),
-                  (58.5,-7.35), (35.,-8.), (-23.5, -80.)]
+        points = [(23.5,-80.),(80,-80), (80,20), (70,20),
+                  (58.5,-7.35), (35.,-8.), (23.5, -80.)]
+        
+        points = [(23.5,-80.),(89,-90.), (89,90.), (70.,90.), (70,20), 
+                  (58.5,-7.35), (35.,-8.), (23.5,-8.), (23.5, -80.)]
         
         poly = shapely.Polygon(points)
 
@@ -498,7 +500,7 @@ class StommelClusterer:
                 z1 = self.data['depth'][iz1]
                 if mask1 and iz1<=0:
                     clusters[0] += [(iz1,iy1,ix1)]
-                elif mask1 and z1 < 1.5e3: #np.inf:
+                elif mask1 and z1 < 3.5e3: #np.inf:
                     clusters[1] += [(iz1,iy1,ix1)]
 
         # Return lists of indices for each cluster.
@@ -562,7 +564,6 @@ def plot_cluster2d(ax, data, indices):
     ax.set_ylabel('Latitude [deg]')
 
     return ax
-
 
 #%% Processing routines
 
@@ -795,6 +796,10 @@ h_indices = clusterer.cluster_by_inversion(clusterer.select_atlantic())
 hv_indices = []
 for indices in h_indices:
     hv_indices += clusterer.cluster_top(indices)
+    
+print('Saving clusters to file.')
+with open(os.path.join(DIR, 'clusters_'+FILE_NAME), 'wb') as stream:
+    pkl.dump({'indices':hv_indices,'output':output}, stream)
 
 # Create time series for each of the clusters and plot it.
 plt.close('all')
@@ -829,7 +834,7 @@ surface_data = create_surface(output, hv_indices)
 
 #Save all relevant data into file. 
 #Save into file
-print("Saving output to file at time "+str(datetime.now()))
+print("Averaging clusters "+str(datetime.now()))
 boxed_hadley = {'yy': yy, 'R': R, 'mu': mu, **surface_data}
 labels = label_indices(output, hv_indices)
 geo = {'cross':0.,'area':0.,'vol':0.}
@@ -860,9 +865,12 @@ for label, index in zip(labels, hv_indices):
         boxed_hadley = {**boxed_hadley, 'geo_pole':geo}
     if all(label==['equator','ocean']):
         boxed_hadley = {**boxed_hadley, 'geo_eq':geo}
-        
+ 
+print("Saving output to file at time "+str(datetime.now()))
 with open(os.path.join(DIR, FILE_NAME), 'wb') as stream:
     pkl.dump(boxed_hadley, stream)
+    
+
 
 #Start time
 print('Completed data processing at ',datetime.now())
