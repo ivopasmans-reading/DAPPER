@@ -241,9 +241,6 @@ class StommelClusterer:
         """ Select grid points in North-Atlantic. """
         
         #Rough outline of North-Atlantic
-        points = [(23.5,-80.),(80,-80), (80,20), (70,20),
-                  (58.5,-7.35), (35.,-8.), (23.5, -80.)]
-        
         points = [(23.5,-80.),(89,-90.), (89,90.), (70.,90.), (70,20), 
                   (58.5,-7.35), (35.,-8.), (23.5,-8.), (23.5, -80.)]
         
