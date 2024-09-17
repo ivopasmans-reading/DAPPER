@@ -172,3 +172,6 @@ tmp
 
 gpuenv
 *.png
+*#
+*~
+*vscode
