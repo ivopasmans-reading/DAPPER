@@ -1,8 +1,19 @@
-import numpy as np 
-from matplotlib import pyplot as plt
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Sep  3 13:02:13 2024
 
-x=np.linspace(0,2,100)
+@author: ivo
+"""
+print('TEST')
 
-#%%
-plt.plot(x,x)
-plt.show()
+import sys
+import dapper.mods as modelling
+
+import keras
+import tensorflow as tf
+
+
+for a in sys.argv:
+    print(tf.config.experimental.list_physical_devices())
+    print('Arg ',a)

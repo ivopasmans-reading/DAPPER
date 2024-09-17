@@ -51,7 +51,7 @@ def run_model(K, dko, seed, obs_type='normal', amplitude=0.2, sigo=.1):
 
     # Actual observation operator.
     obs_func = lambda e : np.exp(e[0]**3+e[1]**2)
-    obs = circle.create_obs_factory_func(obs_func, sigo)
+    obs = circle.create_obs_factory(obs_func, sigo)
     Obs = {'time_dependent': obs}
 
     # Time steps

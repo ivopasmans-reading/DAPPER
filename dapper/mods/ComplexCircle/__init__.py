@@ -135,7 +135,7 @@ class Rotation(tools.randvars.RV):
 X0 = Rotation(radius=1, stats=scipy.stats.uniform(-.1*np.pi,.1*np.pi))
  
 #Observation real part
-def create_obs_factory(ind, sig, distribution):  
+def depreciated_create_obs_factory(ind, sig, distribution):  
     M = len(ind)
     
     def create_obs(ko):
@@ -172,9 +172,18 @@ def create_obs_factory(ind, sig, distribution):
     
     return create_obs
 
-def create_obs_factory_func(func, sig):  
+def create_obs_factory(func, sig, distribution='normal'):  
+    """ 
+    Create observation operator including observational error 
+    probability distribution. 
+    """
     M = 1
     
+    #Create function from indices. 
+    if hasattr(func,'__iter__'):
+        indices = func
+        func = lambda e: e[indices]
+        
     def create_obs(ko):
         """ Create time-dependent observation operator. """
         
@@ -184,9 +193,13 @@ def create_obs_factory_func(func, sig):
             else:
                 return np.reshape([func(e) for e in E], (-1,M))
             
-        
-        C = sig**2 * np.ones((M,))
-        noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
+        if 'normal' in distribution:
+            C = sig**2 * np.ones((M,))
+            noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
+        elif 'beta' in distribution:
+            noise = tools.randvars.RV_beta(sig**2, lbounds=-1, ubounds=1, M=M)
+        else:
+            raise Exception(f"distribution {distribution} is unknown")
         
         Obs = {'M':M, 'model':sample, 'linear':sample,
                'noise':noise}

@@ -50,35 +50,35 @@ class RV(NicePrint):
             E = self.func(N)
         elif hasattr(self, 'file'):
             # Provided by numpy file with sample
-            data   = np.load(self.file)
+            data = np.load(self.file)
             sample = data['sample']
-            N0     = len(sample)
+            N0 = len(sample)
             if 'w' in data:
                 w = data['w']
             else:
                 w = np.ones(N0)/N0
             idx = rng.choice(N0, N, replace=True, p=w)
-            E   = sample[idx]
+            E = sample[idx]
         elif hasattr(self, 'icdf'):
             # Independent "inverse transform" sampling
             icdf = np.vectorize(self.icdf)
-            uu   = rng.random((N, self.M))
-            E    = icdf(uu)
+            uu = rng.random((N, self.M))
+            E = icdf(uu)
         elif hasattr(self, 'cdf'):
             # Like above, but with inv-cdf approximate, from interpolation
             if not hasattr(self, 'icdf_interp'):
                 # Define inverse-cdf
                 from scipy.interpolate import interp1d
                 from scipy.optimize import fsolve
-                cdf    = self.cdf
+                cdf = self.cdf
                 Left,  = fsolve(lambda x: cdf(x) - 1e-9, 0.1)  # noqa
                 Right, = fsolve(lambda x: cdf(x) - (1-1e-9), 0.1)  # noqa
-                xx     = np.linspace(Left, Right, 1001)
-                uu     = np.vectorize(cdf)(xx)
-                icdf   = interp1d(uu, xx)
+                xx = np.linspace(Left, Right, 1001)
+                uu = np.vectorize(cdf)(xx)
+                icdf = interp1d(uu, xx)
                 self.icdf_interp = np.vectorize(icdf)
             uu = rng.random((N, self.M))
-            E  = self.icdf_interp(uu)
+            E = self.icdf_interp(uu)
         elif hasattr(self, 'pdf'):
             # "acceptance-rejection" sampling
             raise NotImplementedError
@@ -86,70 +86,74 @@ class RV(NicePrint):
             raise KeyError
         assert self.M == E.shape[1]
         return E
-    
+
     def add_sample(self, E):
-        return E + self.sample(np.size(E,0))
-    
+        return E + self.sample(np.size(E, 0))
+
+
 class RV_beta(RV):
     """
     Random variable from beta distribution. 
     """
-    
+
     def __init__(self, var, lbounds=0, ubounds=1, M=None):
         if M is not None:
             self.M = M
-        elif not isinstance(lbounds, (float,int,np.floating,np.integer)):
+        elif not isinstance(lbounds, (float, int, np.floating, np.integer)):
             self.M = len(lbounds)
-        elif not isinstance(ubounds, (float,int,np.floating,np.integer)):
+        elif not isinstance(ubounds, (float, int, np.floating, np.integer)):
             self.M = len(ubounds)
-        elif not isinstance(var, (float,int,np.floating,np.integer)):
+        elif not isinstance(var, (float, int, np.floating, np.integer)):
             self.M = len(var)
-            
+
         var = var / (ubounds - lbounds)**2
-        if isinstance(var, (float,int,np.floating,np.integer)):
-            self.C = CovMat(var*np.ones(self.M), 'diag') 
+        if isinstance(var, (float, int, np.floating, np.integer)):
+            self.C = CovMat(var*np.ones(self.M), 'diag')
         else:
-            self.C = CovMat(var, 'diag') 
-        
-        self.to_unit = lambda x : (x - lbounds) / (ubounds - lbounds) 
-        self.from_unit = lambda x : (ubounds - lbounds) * x + lbounds
-    
+            self.C = CovMat(var, 'diag')
+
+        self.to_unit = lambda x: (x - lbounds) / (ubounds - lbounds)
+        self.from_unit = lambda x: (ubounds - lbounds) * x + lbounds
+
     def sample(self, N):
         raise NotImplementedError("Beta distribution needs input values.")
-        
+
     def add_sample(self, E):
         E = self.to_unit(E)
         E = np.minimum(np.maximum(E, 0.), 1.)
-        a,b = self.parms(E)
-        rv = stats.beta(a,b)
+        a, b = self.parms(E)
+        rv = stats.beta(a, b)
         E = rv.rvs(np.shape(E))
         return self.from_unit(E)
-        
+
     def parms(self, mode):
         shape = np.shape(mode)
         a, b = [], []
-        
-        var  = self.C.diag[None,...] * np.ones((np.size(mode,0),1))
+
+        var = self.C.diag[None, ...] * np.ones((np.size(mode, 0), 1))
         mode = np.reshape(mode, (-1,))
         var = np.reshape(var, (-1,))
         for mode1, var1 in zip(mode, var):
-            mode_var = lambda x : ((x[0]-1)/(x[0]+x[1]-2)-mode1, 
-                                   x[0]*x[1]/(x[0]+x[1])**2/(x[0]+x[1]+1)-var1)
-            a1, b1 = fsolve(mode_var, (2,2))
-            
-            if a1<1 or b1<1:
-                print('a, b, mode, var ',a1, b1, mode1, var1, mode_var((a1,b1)))
+            def mode_var(x): return ((x[0]-1)/(x[0]+x[1]-2)-mode1,
+                                     x[0]*x[1]/(x[0]+x[1])**2/(x[0]+x[1]+1)-var1)
+            a1, b1 = fsolve(mode_var, (2, 2))
+
+            if a1 < 1 or b1 < 1:
+                print('a, b, mode, var ', a1, b1,
+                      mode1, var1, mode_var((a1, b1)))
                 raise ValueError("Invalid beta parameters")
-            
+
             a.append(a1)
             b.append(b1)
-            
+
         a = np.reshape(a, shape)
         b = np.reshape(b, shape)
-        
+
         return a, b
 
 # TODO 4: improve constructor (treatment of arg cases is too fragile).
+
+
 class RV_with_mean_and_cov(RV):
     """Generic multivariate random variable characterized by mean and cov.
 
@@ -203,9 +207,9 @@ class RV_with_mean_and_cov(RV):
             pass
 
         # Assign
-        self.M  = M
+        self.M = M
         self.mu = mu
-        self.C  = C
+        self.C = C
 
     def sample(self, N):
         """Sample N realizations. Returns N-by-M (ndim) sample matrix.

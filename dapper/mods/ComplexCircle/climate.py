@@ -9,6 +9,7 @@ Functions to run and train VAE on climatology.
 """
 
 import tensorflow as tf
+from numba import cuda
 tf.config.experimental.list_physical_devices()
 import numpy as np
 import dapper.mods as modelling
@@ -17,7 +18,7 @@ from dapper.mods import ComplexCircle as circle
 from dapper.mods.ComplexCircle import vae_plots as plots
 from dapper.vae import circle_vae as vae
 import shutil
-import os, dill
+import os, dill, sys
 import random
 import keras
 import xarray as xr
@@ -32,20 +33,41 @@ XP_NAMES = ['no DA','ETKF','single-clima','single-transfer',
 # Number of ensemble member
 Nens = 64
 
+
+def clear():
+    """ Remove model from memory. """
+    print('CLEAR')
+    keras.backend.clear_session(free_memory=True)
+    device = cuda.get_current_device()
+    device.reset()
+    cuda.close()
+    import tensorflow as tf
+    
+#Remove faulty 1200<=seed<1300
+def filter_data(data):
+    seeds = data.coords['seed']
+    seeds = [s for s in seeds if s<1200 or s>=1300]
+    return data.sel(seed=seeds) 
+
+def assert_gpu_active():
+    devices = tf.config.experimental.list_physical_devices()
+    if not any([device.device_type=='GPU' for device in devices]):
+        raise RuntimeError("GPU not active.")
+
 def run_model_default(K, dko, seed, obs_type='normal', amplitude=0.0, sigo=.1,
                       obs_func=None):
     """
     Function that creates the model for this experiment
     """
+    assert_gpu_active()
 
     Dyn = {'M': 2, 'model': circle.step_factory(amplitude=amplitude),
            'linear': circle.step_factory(amplitude=amplitude), 'noise': 0}
 
     # Actual observation operator.
-    # Actual observation operator.
     if obs_func is None:
         obs_func = lambda e : e[0]
-    obs = circle.create_obs_factory_func(obs_func, sigo)
+    obs = circle.create_obs_factory(obs_func, sigo, distribution=obs_type)
     Obs = {'time_dependent': obs}
 
     # Time steps
@@ -65,7 +87,7 @@ def run_model_default(K, dko, seed, obs_type='normal', amplitude=0.0, sigo=.1,
 
 def reset_random_seeds(seed):
     os.environ['PYTHONHASHSEED'] = str(0)
-    tf.random.set_seed(seed)
+    #IP tf.random.set_seed(seed)
     keras.utils.set_random_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -84,13 +106,50 @@ def compare_layers(m0, m1):
 
 class VaeExperiment:
     
+    def _in_seed_range(self, seed):
+        if len(sys.argv)!=3:
+            return True
+        elif seed>=int(sys.argv[1]) and seed<int(sys.argv[2]):
+            return True 
+        else:
+            return False
+    
+    @property
+    def filepath(self):
+        return os.path.join(MODEL_PATH, self.save_name)
+    
+    def create_data(self):
+        self.keys = dict([('crps', plots.CRPS), ('histogram', plots.Histogram),
+                          ('rmse', plots.EnsError)])
+        self.data_for = dict([(key, xr.Dataset()) for key in self.keys])
+        self.data_ana = dict([(key, xr.Dataset()) for key in self.keys])
+        self.done = []
+    
     def save(self):
         with open(self.filepath,'wb') as stream:
-            dill.dump(self.data, stream)
+            dill.dump((self.data_for, self.data_ana), stream)
             
     def load(self):
-        with open(self.filepath,'rb') as stream:
-            self.data = dill.load(stream)
+        self.create_data()
+        
+        if not os.path.exists(self.filepath):
+            return
+        
+        with open(self.filepath, 'rb') as stream:
+            self.data_for, self.data_ana = dill.load(stream)
+            
+        if len(self.data_ana['rmse'])>0:
+            #Check for which combinations (experiment,seed) all values are non-nan
+            isnull = self.data_ana['rmse']['x'].isnull()
+            coords = set(isnull.coords) - set(['seed','experiment'])
+            isnull = isnull.reduce(lambda x, axis : np.any(x, axis=axis), dim=coords)
+            self.done = [(xp, seed) for xp in list(isnull['experiment'].data)
+                         for seed in list(isnull['seed'].data)
+                         if not isnull.sel(experiment=xp, seed=seed)]
+            
+    def delete(self):
+        if os.path.exists(self.filepath):
+            os.remove(self.filepath)
 
 class ClimaExperiment(VaeExperiment):
     """ Run the climatology and use it for training weights. """
@@ -215,35 +274,37 @@ class XpsClass:
         name = self.names.__next__()
         if name is StopIteration:
             return StopIteration
-        elif name=='no DA':
+        elif 'no DA' in name:
             xp = eda.EnDa(self.Nens, [], name='no DA')
-        elif name=='ETKF':
-            xp = self.factory.build(self.Nens, 'Sqrt svd', name='ETKF', rot=False)
-        elif name=='single-transfer':
+        elif 'ETKF' in name:
+            xp = self.factory.build(self.Nens, 'Sqrt svd', name=name, rot=False)
+        elif 'single-transfer' in name:
             bkg_trans = eda.BackgroundVaeTransform(self.hypermodel, self.hp, self.model)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='single-transfer',
+            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name=name,
                                     VaeTransforms=[bkg_trans])
-        elif name=='double-transfer':
+        elif 'double-transfer' in name:
             bkg_trans = eda.BackgroundVaeTransform(self.hypermodel, self.hp, self.model)
             inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No, 
                                               self.HMM.Obs(0).noise.add_sample)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-transfer',
+            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name=name,
                                     VaeTransforms=[inno_trans,bkg_trans])
-        elif name=='double-cycle':
+        elif 'double-cycle' in name:
             cycle_trans = eda.CyclingVaeTransform(self.hypermodel, self.hp, None)
-            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name='double-cycle',
+            xp = self.factory.build(self.Nens, 'ETKF_D', No=self.No, name=name,
                                     VaeTransforms=[cycle_trans])
-        elif name=='single-clima':
+        elif 'single-clima' in name:
             vae_trans = eda.VaeTransform(self.hypermodel, self.hp, self.model)
-            xp = self.factory.build(self.Nens,'ETKF_D', No=self.No, name='single-clima',
+            xp = self.factory.build(self.Nens,'ETKF_D', No=self.No, name=name,
                                     VaeTransforms=[vae_trans])
-        elif name=='double-clima':
+        elif 'double-clima' in name:
             vae_trans = eda.VaeTransform(self.hypermodel, self.hp, self.model)
             inno_trans = eda.InnoVaeTransform(self.hypermodel, self.hp, self.model, self.No, 
                                               self.HMM.Obs(0).noise.add_sample)
-            xp = self.factory.build(self.Nens,'ETKF_D', No=self.No, name='double-clima',
+            xp = self.factory.build(self.Nens,'ETKF_D', No=self.No, name=name,
                                     VaeTransforms=[inno_trans,vae_trans])
         else:
             raise ValueError(f'{name} not a valid name for experiment.')
         
         return xp 
+    
+    

@@ -11,11 +11,11 @@ error from Gaussian.
 
 import numpy as np
 import xarray as xr
-from climate import ClimaExperiment, VaeExperiment, XpsClass
+from climate import ClimaExperiment, VaeExperiment, XpsClass, filter_data
 from climate import Nens, reset_random_seeds, run_model_default
 from dapper.vae import circle_vae as vae
 from dapper.mods.ComplexCircle import vae_plots as plots
-import os, dill, shutil
+import os, dill, shutil, sys
 
 # Directory in which the figures will be stored.
 FIG_DIR = '/home/ivo/Figures/vae/paper_static'
@@ -104,7 +104,6 @@ run_model = run_model_default
         
 #%% Experiment static
 
-
 class StaticExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle. """
     
@@ -127,6 +126,8 @@ class StaticExperiment(VaeExperiment):
         for clima in climas:
             for n in range(0,self.N):
                 self.seed = clima.seed + n * 7
+                if not self._in_seed_range(self.seed):
+                    continue
                 print(f'Running seed {self.seed}')
                 self.run1(clima)
                 
@@ -147,7 +148,6 @@ class StaticExperiment(VaeExperiment):
             #Test if experiment has been loaded from file. 
             if (xp.name, self.seed) in self.done:
                 print('\nDONE ', xp.name, self.seed)
-                del(xp)
                 continue
             else:
                 print('\nRUNNING ', xp.name, self.seed)
@@ -176,59 +176,18 @@ class StaticExperiment(VaeExperiment):
             #Save output
             self.save()
             self.done += [(xp.name, self.seed)]
-                
-            del(xp)
-    
-    @property
-    def filepath(self):
-        return os.path.join(MODEL_PATH, self.save_name)
-    
-    def create_data(self):
-        self.keys = dict([('crps', plots.CRPS), ('histogram', plots.Histogram),
-                          ('rmse', plots.EnsError)])
-        self.data_for = dict([(key, xr.Dataset()) for key in self.keys])
-        self.data_ana = dict([(key, xr.Dataset()) for key in self.keys])
-        self.done = []
-    
-    def save(self):
-        with open(self.filepath,'wb') as stream:
-            dill.dump((self.data_for, self.data_ana), stream)
-            
-    def load(self):
-        self.create_data()
-        
-        if not os.path.exists(self.filepath):
-            return
-        
-        with open(self.filepath, 'rb') as stream:
-            self.data_for, self.data_ana = dill.load(stream)
-            
-        if len(self.data_ana['rmse'])>0:
-            #Check for which combinations (experiment,seed) all values are non-nan
-            isnull = self.data_ana['rmse']['x'].isnull()
-            coords = set(isnull.coords) - set(['seed','experiment'])
-            isnull = isnull.reduce(lambda x, axis : np.any(x, axis=axis), dim=coords)
-            self.done = [(xp, seed) for xp in list(isnull['experiment'].data)
-                         for seed in list(isnull['seed'].data)
-                         if not isnull.sel(experiment=xp, seed=seed)]
-            
-    def delete(self):
-        if os.path.exists(self.filepath):
-            os.remove(self.filepath)
             
 #Run the experiment.         
 exp = StaticExperiment(49, 10)
 exp.load()
 exp.run()
 
+#Terminate if not called from command line
+if len(sys.argv)>1:
+    quit()
+
+
 #%% Plot output statistics.
-
-
-#Remove faulty 1200<=seed<1300
-def filter_data(data):
-    seeds = data.coords['seed']
-    seeds = [s for s in seeds if s<1200 or s>=1300]
-    return data.sel(seed=seeds) 
 
 for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
     plot_data = filter_data(data['histogram'])
@@ -288,12 +247,11 @@ def plot_movie(experiments, run_time, dko, No=Nens*16):
         circle.add_obs(xp.HMM.tseq.tto, yy)
         circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f) 
         circle.add_ens_ana(xp.name, xp.HMM.tseq.tto, xp.stats.E.a)
-        circle.add_latent_for(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['f'])
-        circle.add_latent_ana(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['a'])
+        #circle.add_latent_for(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['f'])
+        #circle.add_latent_ana(xp.name, xp.HMM.tseq.tto, xp.stats.Elatent['a'])
         
        
         circle.animate_time(xp.HMM.tseq.tto, fig_name='movie_'+xp.name)
-        
     
-#plot_movie(['no DA','ETKF','single-clima','single-transfer','double-clima','double-transfer'], 500, 10)
-plot_movie(['double-transfer'], 100, 10)
+plot_movie(['ETKF','single-clima','single-transfer'], 500, 10)
+#plot_movie(['double-transfer'], 100, 10)

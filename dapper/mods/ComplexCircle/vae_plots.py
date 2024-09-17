@@ -81,6 +81,7 @@ def set_styles(plot):
         plot.style.assign(xp)
     return plot
 
+
 # %% Abstract classes for plotting.
 
 def correlation(x, axis=-1):
@@ -167,6 +168,7 @@ class Styles:
                        (0, (3, 1, 1, 1, 1, 1)), (0, (3, 5, 1, 5, 1, 5)), (0, (5, 5))]
         self.markers = ['o', 's', 'X', 'H', 'v', '^', 'P', 'D', '8']
         self.hatches = ['/', '\\', '||', '--', 'x', '++', 'o', '.', '*']
+        self.alphas = np.ones((self.n_options,)) 
         
     def reset(self):
         self.indices = {}
@@ -196,10 +198,52 @@ class Styles:
         return self.hatches[self.index]
     
     @property 
+    def alpha(self):
+        return self.alphas[self.index]
+    
+    @property 
     def labels(self):
         return list(self.indices.keys())
     
-
+class CompoundedStyles(Styles):
+    
+    def reset(self):
+        super().reset()
+        self.subindices = {}
+        
+    def split_label(self, label):
+        part1 = [part1 for part1 in self.labels if part1 in label]
+        if len(part1)==0:
+            label1, label2 = label.strip(), None
+        else:
+            label1 = part1[0].strip()
+            label2 = label.replace(label1,"").strip()
+        
+        return label1, label2
+    
+    def assign(self, label):
+        label1, label2 = self.split_label(label)
+        
+        super().assign(label1)
+        self.subindex = label2
+        if label2 is None:
+            return 
+        elif label2 in self.subindices:
+            return 
+        
+        alpha = [l for l in self.subindices.values()]
+        if len(alpha)==0:
+            self.subindices[label2] = 1.0 
+        else:
+            self.subindices[label2] = .5*np.min(alpha)
+        
+    @property
+    def alpha(self):
+        if self.subindex is None:
+            return 1.0
+        else:
+            return self.subindices[self.subindex]
+    
 class BasePlots:
     """ 
     Abstract class that is used as template for figures that generate 
@@ -1047,7 +1091,7 @@ class CrpsPlots(BasePlots):
             self.style.assign(label)
             data1 = data.sel(variable=label)
             data1 = self.calculate_mean(data1)
-
+            
             mean = np.array(data1['mean'].data)
             low = mean - np.array(data1['low'].data)
             high = np.array(data1['high'].data) - mean
@@ -1058,7 +1102,7 @@ class CrpsPlots(BasePlots):
             ax.bar(range(len(data1.coords['experiment'])) + width[n],
                    mean, yerr=np.array([low, high]), label=label, 
                    color=self.style.color, hatch=self.style.hatch,
-                   width=np.diff(width[:2]))
+                   width=np.diff(width[:2]), alpha=self.style.alpha)
 
 class SingleCrpsPlots(CrpsPlots):
     
@@ -1078,7 +1122,7 @@ class SingleCrpsPlots(CrpsPlots):
         ax = self.axes[0,0]
         self.labels = np.array(self.data['x'].coords['experiment'])
         width = np.linspace(-.5, .5, len(self.labels)+1)*.6
-        width = .5*width[1:]+.5*width[:-1]
+        bar_centres = .5*width[1:]+.5*width[:-1]
         
         keys = list(self.data.keys())[:4] #x,y,radius,angle
         for n, label in enumerate(self.labels):
@@ -1094,17 +1138,18 @@ class SingleCrpsPlots(CrpsPlots):
                 low.append(mean[-1] - float(data1['low'].data))
                 high.append(float(data1['high'].data) - mean[-1])
                 
-            ax.bar(width[n] + range(1,len(keys)+1),
+            ax.bar(bar_centres[n] + np.arange(1,len(keys)+1),
                    mean, yerr=np.array([low, high]), label=label,
-                   width=np.diff(width[:2]), color=self.style.color,
-                   hatch=self.style.hatch) 
+                   color=self.style.color, width=np.diff(width[:2]),
+                   hatch=self.style.hatch, alpha=self.style.alpha) 
+                
 
         ax.set_title('crps')        
         keys[-1] += ' [rad]'
         for ax in self.axes.ravel():
             self.set_nice_ylim(ax, include=[0.0], minlim=0.0)
-            ax.set_xticklabels(keys)
             ax.set_xticks(range(1,len(keys)+1))
+            ax.set_xticklabels(keys)
             ax.grid()
 
         self.axes[-1, 0].legend(loc='upper left', framealpha=1.0, ncol=2)
@@ -1221,7 +1266,7 @@ class TaylorPlots(BasePlots):
 
             # Plot
             h, = ax.plot(corET[0], sEE[0], self.style.marker, label=label,
-                         color=self.style.color)
+                         color=self.style.color, alpha=self.style.alpha)
             self.handles.append(h)
 
             # Plot rmse
@@ -1242,7 +1287,7 @@ class TaylorPlots(BasePlots):
                         yerr=np.array([[sEE[0]-min(sEE)],
                                        [max(sEE)-sEE[0]]]),
                         label=label, color=self.style.color, 
-                        marker=self.style.marker)
+                        marker=self.style.marker, alpha=self.style.alpha)
 
     def plot_taylor1(self, ax, data):
 
@@ -1386,14 +1431,16 @@ class CirclePlot(BasePlots):
 
     def plot_time(self, time, fig_name='trajectory'):
 
+        nplots = 1 if self.latent_dim==0 else 2
         if not hasattr(self, 'axes') or self.axes is None:
             plt.close('all')
-            self.fig, self.axes = plt.subplots(1, 2, figsize=(8, 4))
-            self.fig.subplots_adjust(left=.1, right=.98, wspace=.215,
+            self.fig, self.axes = plt.subplots(1, nplots, figsize=(nplots*4, 4))
+            self.fig.subplots_adjust(left=.18, right=.98, wspace=.215,
                                      bottom=.12, top=.92)
+            self.axes = np.array(self.axes).ravel()
             # self.assign_styles()
         else:
-            for ax in self.axes.flatten():
+            for ax in self.axes:
                 ax.clear()
 
         self.fig_name = fig_name
@@ -1440,17 +1487,19 @@ class CirclePlot(BasePlots):
             self.add_handle(h)
 
         #Layout left plot
-        ax = self.axes[0]
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_xlim(-2., 2.)
-        ax.set_ylim(-2., 2.)
-        ax.set_aspect(1)
+        if len(self.axes)>0:
+           ax = self.axes[0]
+           ax.set_xlabel('x')
+           ax.set_ylabel('y')
+           ax.set_xlim(-2., 2.)
+           ax.set_ylim(-2., 2.)
+           ax.set_aspect(1)
 
         #Layout right plot
-        ax = self.axes[1]
-        self.set_nice_xlim(ax, lims=[-2, 2], max_ticks=7)
-        self.set_nice_ylim(ax, minlim=0)
+        if len(self.axes)>1:
+            ax = self.axes[1]
+            self.set_nice_xlim(ax, lims=[-2, 2], max_ticks=7)
+            self.set_nice_ylim(ax, minlim=0)
 
         for ax in self.axes.flatten():
             ax.grid()
@@ -2547,8 +2596,6 @@ class PrincipalPlots(BasePlots):
 
 
 # %%
-
-
 class DifferenceWeights(BasePlots):
     """ Plot differences in training weights. """
 

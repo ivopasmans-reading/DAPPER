@@ -176,72 +176,66 @@ exp = NlobsExperiment(49, 10)
 exp.load()
 exp.run()
 
-# #%% Plot output statistics.
+#%% Plot output statistics.
 
-# #Remove faulty 1200<=seed<1300
-# def filter_data(data):
-#     seeds = data.coords['seed']
-#     seeds = [s for s in seeds if s<1200 or s>=1300]
-#     return data.sel(seed=seeds) 
+#Remove faulty 1200<=seed<1300
+def filter_data(data):
+    seeds = data.coords['seed']
+    #seeds = [s for s in seeds if s<1200 or s>=1300]
+    return data.sel(seed=seeds) 
 
-# for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
-#     plot_data = filter_data(data['histogram'])
-#     plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
-#     plotHist.plot_scatter_density('scatter_'+stage)
-#     plotHist.save()
+for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
+    # plot_data = filter_data(data['histogram'])
+    # plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
+    # plotHist.plot_scatter_density('scatter_'+stage)
+    # plotHist.save()
     
-#     plot_data = filter_data(data['crps'])
-#     plotHist = plots.CrpsPlots(FIG_DIR, plot_data)
-#     plotHist.plot_crps('crps_'+stage)
-#     plotHist.save()
+    # plot_data = filter_data(data['crps'])
+    # plotHist = plots.CrpsPlots(FIG_DIR, plot_data)
+    # plotHist.plot_crps('crps_'+stage)
+    # plotHist.save()
     
-#     plot_data = filter_data(data['rmse'])
-#     plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
-#     plotHist = plots.set_styles(plotHist)
-#     plotHist.plot_taylor('taylor_'+stage)
-
-#     plotHist.save()
+    # plot_data = filter_data(data['rmse'])
+    # plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
+    # plotHist = plots.set_styles(plotHist)
+    # plotHist.plot_taylor('taylor_'+stage)
+    # plotHist.save()
     
-#     plot_data = filter_data(data['crps'])
-#     plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-#     plotHist = plots.set_styles(plotHist)
-#     plotHist.plot_crps('crps_single_'+stage)
-#     plotHist.save()
+    # plot_data = filter_data(data['crps'])
+    # plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
+    # plotHist = plots.set_styles(plotHist)
+    # plotHist.plot_crps('crps_single_'+stage)
+    # plotHist.save()
     
-#     plot_data = filter_data(data['crps'])
-#     plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-#     plotHist = plots.set_styles(plotHist)
-#     plotHist.plot_crps('crps_single_'+stage)
-#     plotHist.save()
 
-# # %% Generate animation
+# %% Generate animation
 
-# def plot_movie(experiments, run_time, dko, No=Nens*4):
-#     climas = iter(ClimaExperiment(0.0))
-#     for n in range(1):
-#         clima = climas.__next__()
+def plot_movie(experiments, run_time, dko, No=Nens*4):
+    climas = iter(ClimaExperiment(0.0))
+    for n in range(1):
+        clima = climas.__next__()
 
-#     # Create new run.
-#     reset_random_seeds(clima.seed-100)
-#     HMM, xx, yy = run_model(run_time, dko, clima.seed-100)
-#     xps = iter(XpsClass(clima, HMM, Nens, No))
+    # Create new run.
+    reset_random_seeds(clima.seed-100)
+    HMM, xx, yy = run_model(run_time, dko, clima.seed-100)
+    xps = iter(XpsClass(clima, HMM, Nens, No))
 
-#     for xp in xps:
-#         print('XP ', xp.name)
-#         if xp.name not in experiments:
-#             continue
-#         # Run
-#         _, _, _ = run_model(run_time, dko, clima.seed)
-#         xp.HMM = HMM
-#         xp.assimilate(HMM, xx, yy, liveplots=False)
-#         # Plot
-#         circle = plots.CirclePlot(FIG_DIR)
-#         circle.add_track(xp.name, xp.HMM.tseq.tt, xx)
-#         circle.add_obs(xp.HMM.tseq.tto, yy)
-#         circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f)
-#         circle.add_ens_ana(xp.name, xp.HMM.tseq.tto, xp.stats.E.a)
-#         circle.animate_time(xp.HMM.tseq.tto, fig_name='movie_'+xp.name)
+    for xp in xps:
+        print('XP ', xp.name)
+        if xp.name not in experiments:
+            continue
+        # Run
+        _, _, _ = run_model(run_time, dko, clima.seed)
+        xp.HMM = HMM
+        xp.assimilate(HMM, xx, yy, liveplots=False)
+        # Plot
+        circle = plots.CirclePlot(FIG_DIR)
+        circle.add_track(xp.name, xp.HMM.tseq.tt, xx)
+        circle.add_obs(xp.HMM.tseq.tto, yy)
+        circle.add_ens_for(xp.name, xp.HMM.tseq.tto, xp.stats.E.f)
+        circle.add_ens_ana(xp.name, xp.HMM.tseq.tto, xp.stats.E.a)
+        circle.animate_time(xp.HMM.tseq.tto, fig_name='movie_'+xp.name)
 
 
-# plot_movie(['ETKF', 'single-transfer', 'double-transfer', 
-#             'single-clima','double-clima'], 500, 10)
+plot_movie(['ETKF', 'single-transfer', 'double-transfer', 
+            'single-clima','double-clima'], 500, 10)

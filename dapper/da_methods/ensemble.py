@@ -352,7 +352,7 @@ class VaeTransform(EnProcessor):
                                                       E[None,...]), axis=0)
         
         #Convert latent background ensemble to state space. 
-        _, _, _, E = self.model.decoder.predict(E, verbose=False) 
+        _, _, _, E = self.model.decoder.predict(E, verbose=self.hp.get('verbose')) 
         E = np.array(E)
         
         return E, Y, D
@@ -392,7 +392,8 @@ class CyclingVaeTransform(VaeTransform):
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
         
-        history = self.hypermodel.fit(self.hp, self.model, E, verbose=False) 
+        history = self.hypermodel.fit(self.hp, self.model, E, 
+                                      verbose=self.hp.get('verbose')) 
         
 class BackgroundVaeTransform(VaeTransform):
     """
@@ -433,10 +434,12 @@ class BackgroundVaeTransform(VaeTransform):
         layer.bias.assign(layer.bias - Zmean)
         
         #Train weights. 
-        print('BKG FIT')
+        if self.hp.get('verbose'):
+            print('BKG FIT')
         history = self.hypermodel.fit(self.hp, self.model, E, 
                                       verbose=self.hp.get('verbose'))
-        print('END BKG FIT')
+        if self.hp.get('verbose'):
+            print('END BKG FIT')
         
         
 class InnoVaeTransform(VaeTransform):   
@@ -456,7 +459,6 @@ class InnoVaeTransform(VaeTransform):
     def pre(self, k, ko, y, E, Y, D):
         from matplotlib import pyplot as plt 
 
-        
         Y0 = Y+0
         D0 = D+0
         self.train(E, y)
@@ -535,10 +537,13 @@ class InnoVaeTransform(VaeTransform):
         #Train weights
         lr_init = self.hp.values['lr_init']*5e-2
         self.model.optimizer.learning_rate.assign(lr_init)
-        print('INNO FIT')
+        
+        if self.hp.get('verbose'):
+            print('INNO FIT')
         history = self.hypermodel.fit(self.hp, self.model, D, 
                                       verbose=self.hp.get('verbose'))
-        print('END INNO FIT')
+        if self.hp.get('verbose'):
+            print('END INNO FIT')
         
 #----------------------------------------------------------------------
 
