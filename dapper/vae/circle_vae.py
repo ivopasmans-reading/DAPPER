@@ -20,8 +20,10 @@ from keras import layers
 from keras import backend as K
 
 #Directory to store logs from VAE optimization. 
-LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
-tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
+USE_TENSORBOARD = False
+if USE_TENSORBOARD:
+    LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
+    tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
 
 # constant pi
 PI = keras.ops.convert_to_tensor(np.pi)
@@ -328,7 +330,9 @@ class DenseVae(tuner.HyperModel):
         model = self.builder.model 
 
         # Callback that keeps track of epoch and other diagnostics.
-        self.diag = [DiagCallback(**model.diags), tensorboard_callback]
+        self.diag  = [DiagCallback(**model.diags)] 
+        if USE_TENSORBOARD:
+            self.diag += [tensorboard_callback]
 
         # Compile before use and return.
         self.compile(model)
@@ -426,6 +430,7 @@ class DenseVae(tuner.HyperModel):
         """ Set default hyperparameters. """
 
         # Training setup
+        hp.Fixed('verbose',False)
         hp.Fixed('epochs', 50)
         hp.Int('batch_size', default=64, min_value=1, max_value=1024,
                sampling='log')
@@ -469,7 +474,11 @@ def tune_DenseVae(x):
     hypermodel = DenseVae()
 
     # Writer logs
-    tensorboard_writer = keras.callbacks.TensorBoard(LOG_DIR)
+    if USE_TENSORBOARD:
+        tensorboard_writer = keras.callbacks.TensorBoard(LOG_DIR)
+        callbacks = [tensorboard_writer]
+    else:
+        callbacks = []
 
     # Tune layers/nodes
     hp = tuner.HyperParameters()
@@ -493,7 +502,7 @@ def tune_DenseVae(x):
                                    max_retries_per_trial=1,
                                    hyperband_iterations=1)
     # Carry out the search
-    architecture.search(x, callbacks=[tensorboard_writer])
+    architecture.search(x, callbacks=callbacks)
 
     return architecture
 

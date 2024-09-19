@@ -18,13 +18,16 @@ from dapper.mods.ComplexCircle import vae_plots as plots
 import os, dill, shutil, sys
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/paper_static'
+FIG_DIR = '/home/ivo/Figures/vae/test_static'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
 
 # Copy this file
 if __name__ == '__main__' and FIG_DIR is not None:
     shutil.copyfile(__file__, os.path.join(FIG_DIR, 'experiment.py'))
+    
+run_model = lambda K, dko, seed, **kwargs : run_model_default(K, dko, seed, 
+                                                    amplitude=0.0, **kwargs)
     
 #%% CalibrateNo
 
@@ -96,18 +99,13 @@ plot = plots.ConfidencePlots(FIG_DIR)
 plot.set_axes_labels('N_innovations','experiment','seed')
 plot.plot_rms(exp.data['rmse'].sel({'variable':'position'}))
 plot.save()
-
-#%% Generate climatology
-
-climas = ClimaExperiment(0.0, do_plot=False)
-run_model = run_model_default
         
 #%% Experiment static
 
 class StaticExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle. """
     
-    def __init__(self, N, dko, save_name='static.pkl'):
+    def __init__(self, N, dko, save_name='test_static.pkl'):
         self.dko = dko 
         self.Nclima = max(1,int(np.sqrt(N)))
         self.N = int(N / self.Nclima)
@@ -134,7 +132,6 @@ class StaticExperiment(VaeExperiment):
             #Save output 
             del(clima)
         
-    
     def run1(self, clima):
         #Create new run. 
         reset_random_seeds(self.seed-100)
@@ -142,7 +139,7 @@ class StaticExperiment(VaeExperiment):
         
         #Create experiments
         self.xx, self.yy = xx, yy
-        self.xps = iter(XpsClass(clima, HMM, Nens, self.No))
+        self.xps = iter(XpsClass(clima, HMM, Nens, self.No, names=['single-clima']))
         
         for xp in self.xps:
             #Test if experiment has been loaded from file. 
@@ -178,7 +175,7 @@ class StaticExperiment(VaeExperiment):
             self.done += [(xp.name, self.seed)]
             
 #Run the experiment.         
-exp = StaticExperiment(49, 10)
+exp = StaticExperiment(1, 10)
 exp.load()
 exp.run()
 
@@ -190,34 +187,35 @@ if len(sys.argv)>1:
 #%% Plot output statistics.
 
 for stage, data in zip(['forecast','analysis'],[exp.data_for, exp.data_ana]):
-    plot_data = filter_data(data['histogram'])
-    plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
-    plotHist.plot_scatter_density('scatter_'+stage)
-    plotHist.save()
+    # plot_data = filter_data(data['histogram'])
+    # plotHist = plots.ProbDensityPlots(FIG_DIR, plot_data)
+    # plotHist.plot_scatter_density('scatter_'+stage)
+    # plotHist.save()
     
-    plot_data = filter_data(data['crps'])
-    plotHist = plots.CrpsPlots(FIG_DIR, plot_data)
-    plotHist.plot_crps('crps_'+stage)
-    plotHist.save()
+    # plot_data = filter_data(data['crps'])
+    # plotHist = plots.CrpsPlots(FIG_DIR, plot_data)
+    # plotHist.plot_crps('crps_'+stage)
+    # plotHist.save()
     
     plot_data = filter_data(data['rmse'])
     plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
     plotHist = plots.set_styles(plotHist)
-    plotHist.plot_taylor('taylor_'+stage)
+    plotHist.plot_latent_error(plotHist)
+    # plotHist.plot_taylor('taylor_'+stage)
 
-    plotHist.save()
+    # plotHist.save()
     
-    plot_data = filter_data(data['crps'])
-    plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-    plotHist = plots.set_styles(plotHist)
-    plotHist.plot_crps('crps_single_'+stage)
-    plotHist.save()
+    # plot_data = filter_data(data['crps'])
+    # plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
+    # plotHist = plots.set_styles(plotHist)
+    # plotHist.plot_crps('crps_single_'+stage)
+    # plotHist.save()
     
-    plot_data = filter_data(data['crps'])
-    plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
-    plotHist = plots.set_styles(plotHist)
-    plotHist.plot_crps('crps_single_'+stage)
-    plotHist.save()
+    # plot_data = filter_data(data['crps'])
+    # plotHist = plots.SingleCrpsPlots(FIG_DIR, plot_data)
+    # plotHist = plots.set_styles(plotHist)
+    # plotHist.plot_crps('crps_single_'+stage)
+    # plotHist.save()
 
 #%% Generate animation 
 

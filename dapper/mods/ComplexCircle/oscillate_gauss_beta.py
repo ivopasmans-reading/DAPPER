@@ -18,7 +18,7 @@ from dapper.mods.ComplexCircle import vae_plots as plots
 import os, dill, shutil, sys
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/test_beta'
+FIG_DIR = '/home/ivo/Figures/vae/paper_beta'
 # File path used to save model
 MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
 
@@ -35,7 +35,7 @@ run_model = lambda K, dko, seed, **kwargs : run_model_default(K, dko, seed,
 class ObsOscillateExperiment(VaeExperiment):
     """ Experiment in which truth runs over unit circle with varying radius. """
 
-    def __init__(self, N, dko, save_name='oscillation06test.pkl'):
+    def __init__(self, N, dko, save_name='test_oscillation06a.pkl'):
         self.dko = dko 
         self.Nclima = max(1,int(np.sqrt(N)))
         self.N = int(N / self.Nclima)
@@ -91,8 +91,10 @@ class ObsOscillateExperiment(VaeExperiment):
             try:
                 xp.assimilate(HMM, xx, yy, liveplots=False)
             except:
-                self.fails.append((clima, xp, self.seed))
-                continue
+                raise RuntimeError((f"Experiment {xp.name} seed {self.seed} "
+                                    "failed to complete."))
+                #self.fails.append((clima, xp, self.seed))
+                #continue
 
             # Calculate CRPS and save in Xarray.
             for key, value in self.keys.items():
@@ -145,6 +147,7 @@ for stage, data in zip(['forecast', 'analysis'], [exp.data_for, exp.data_ana]):
 
     plot_data = data['rmse']
     plotHist = plots.TaylorPlots(FIG_DIR, plot_data)
+    plotHist.calculate_stats_mean()
     plotHist.plot_taylor('taylor_'+stage)
     plotHist.save()
 

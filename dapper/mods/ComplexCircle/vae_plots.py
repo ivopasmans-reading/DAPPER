@@ -100,12 +100,11 @@ def best_funcs():
     def tfunc(E): return np.mod(np.rad2deg(
         np.arctan2(yfunc(E), xfunc(E))), 360)
 
-    def pfunc(E): return E[..., 0]+complex(0, 1)*E[..., 1]
+    def pfunc(E): return np.hypot(E[..., 0], E[..., 1])
     return [xfunc, yfunc, rfunc, tfunc, pfunc]
 
 
 BEST_FUNC_NAMES = ['x', 'y', 'radius', 'angle', 'position']
-
 
 def smallest_angle(E, xx):
     """ Smallest angle between truth and ensemble members. """
@@ -113,7 +112,6 @@ def smallest_angle(E, xx):
     E = smod(E - xx, 360)
     E += xx
     return E, xx
-
 
 class StepGenerator(object):
     """ Returns possible tick distances in decreasing order. """
@@ -151,8 +149,8 @@ class AngularGenerator(object):
             self.n = len(self.steps) - 1
         return self.steps[self.n]
 
-
 class Styles:
+    """ Styles of lines. """
     
     def __init__(self):
         self.build_styles()
@@ -718,6 +716,69 @@ class Histogram:
                             attrs={'bin range': bin_range})
         return data
 
+class EnsTimeError:
+    """ 
+    Calculate error of different ensemble members. 
+    """
+
+    def __init__(self, ens, truth, name):
+        """ 
+        Class constructor. 
+
+        ens : TxNxM numpy array 
+            Array with N ensemble members at different times T. 
+        truth : TxM 
+            Array with truth at different times T. 
+        weights : float | int | M numpy array 
+            Array with weighting of different variables. 
+
+        """
+
+        # Ensemble members along axis=0
+        self.N = np.size(ens, 1)
+        self.T = np.size(ens, 0)
+        self.ens = np.transpose(ens, (0, 2, 1))
+        self.truth = np.transpose(truth, (0, 1))
+        self.name = name
+
+    def __call__(self):
+
+        output = xr.Dataset()
+        for var in ['truth', 'ensemble', 'error', 'mean']:
+        
+            if var == 'truth':
+                values = self.truth[...,None]
+            elif var == 'ensemble':
+                values = self.ens
+            elif var == 'error':
+                values = self.ens - self.truth[...,None]
+            #values = np.reshape(values, (np.size(values, 0), -1))
+
+            if np.size(values,-1)==1:
+                mean = values 
+                variance = np.zeros_like(mean)
+            else:
+                # Calculate mean over time
+                mean = np.mean(values, axis=-1)
+                mean = np.reshape(mean, (-1,1,1))
+                # Calculate variance over time
+                variance = np.var(values, ddof=1, axis=-1)
+                variance = np.reshape(variance, (-1,1,1))
+            
+            #Members
+            dims   = {'time':self.T, 'variable': 1, 'metric': 1}
+            coords = {'variable': ('variable', [var]),
+                      'time':('time', range(self.T))}
+            
+            mean = xr.DataArray(mean, name=self.name, dims=dims,
+                                coords={**coords, 'metric': ('metric', ['mean'])})
+            variance = xr.DataArray(variance, name=self.name, dims=dims,
+                                    coords={**coords, 'metric': ('metric', ['variance'])})
+            
+            # Add to output
+            output = xr.merge([mean, variance])
+
+        return output
 
 class EnsError:
     """ 
@@ -741,42 +802,55 @@ class EnsError:
         self.N = np.size(ens, 1)
         self.T = np.size(ens, 0)
         self.ens = np.transpose(ens, (1, 2, 0))
-        self.truth = np.transpose(truth, (1, 0))[None, ...]
+        self.truth = np.transpose(truth, (1, 0))
         self.name = name
 
     def __call__(self):
 
         output = xr.Dataset()
-        for var in ['truth', 'ensemble', 'error']:
-            dims = {'member': self.N, 'variable': 1, 'metric': 1}
-            coords = {'member': ('member', range(self.N)),
-                      'variable': ('variable', [var])}
-
+        for var in ['truth', 'ensemble', 'error', 'mean']:
+            
+                
             if var == 'truth':
-                values = self.truth * np.ones((self.N, 1, 1))
+                values = self.truth[None,...]
             elif var == 'ensemble':
                 values = self.ens
+            elif var == 'mean':
+                values = np.mean(self.ens, 0, keepdims=True)
             elif var == 'error':
                 values = self.ens - self.truth
-            values = np.reshape(values, (np.size(values, 0), -1))
+            #values = np.reshape(values, (np.size(values, 0), -1))
 
-            # Calculate bias
+            # Calculate mean over time
             mean = np.mean(values, axis=-1)
-            mean = np.reshape(mean, (self.N, 1, 1))
+            mean = np.reshape(mean, (-1,1,1))
+            # Calculate variance over time
+            variance = np.var(values, ddof=1, axis=-1)
+            variance = np.reshape(variance, (-1,1,1))
+            # Calculate covariance over time
+            truth = np.reshape(self.truth, (-1,))
+            rho = [np.cov(e.ravel(), truth)[1, 0] for e in values]
+            rho = np.reshape(rho, (-1, 1, 1))
+            
+            
+            if var in ['truth','mean']:
+                #No members
+                dims   = {'variable': 1, 'metric': 1}
+                coords = {'variable': ('variable', [var])}
+                mean, variance, rho = mean[0], variance[0], rho[0]
+            else:
+                #Members
+                dims   = {'member':self.N, 'variable': 1, 'metric': 1}
+                coords = {'variable': ('variable', [var]),
+                          'member':('member', range(self.N))}
+            
             mean = xr.DataArray(mean, name=self.name, dims=dims,
                                 coords={**coords, 'metric': ('metric', ['mean'])})
-            # Calculate variance
-            variance = np.var(values, ddof=1, axis=-1)
-            variance = np.reshape(variance, (self.N, 1, 1))
             variance = xr.DataArray(variance, name=self.name, dims=dims,
                                     coords={**coords, 'metric': ('metric', ['variance'])})
-            # Calculate covariance
-            truth = np.reshape(self.truth, (-1,))
-            E = np.reshape(values, (self.N, -1))
-            rho = [np.cov(e, truth)[1, 0] for e in E]
-            rho = np.reshape(rho, (self.N, 1, 1))
             rho = xr.DataArray(rho, name=self.name, dims=dims,
                                coords={**coords, 'metric': ('metric', ['covariance'])})
+            
             # Add to output
             output = xr.merge([output, mean, variance, rho])
 
@@ -808,6 +882,25 @@ def calculate_stat(stat, xp, xx, seed, stage='analysis', **kwargs):
                                        'seed': ('seed', [seed])})
         result = result.assign_attrs({'stage': stage})
 
+        # Combine
+        results = xr.merge([results, result])
+      
+    #Repeat for latent variables
+    if hasattr(xp.stats, 'Elatent') and 'ana' in stage:
+        E, x = xp.stats.Elatent['a'], xp.stats.Elatent['t']
+    elif hasattr(xp.stats, 'Elatent') and 'for' in stage:
+        E, x = xp.stats.Elatent['f'], xp.stats.Elatent['t']
+    else:
+        E, x = [], []
+    
+    for ind in np.arange(np.size(x,-1)):
+        result = stat(E[:,:,ind:ind+1], x[:,ind:ind+1], 
+                      f"latent{ind:02d}", **kwargs)()
+        result = result.expand_dims(dim={'experiment': 1, 'seed': 1})
+        result = result.assign_coords({'experiment': ('experiment', [xp.name]),
+                                       'seed': ('seed', [seed])})
+        result = result.assign_attrs({'stage': stage})
+        
         # Combine
         results = xr.merge([results, result])
 
@@ -859,9 +952,6 @@ class ReconstructionPlot(BasePlots):
         ax.set_title('Climatology latent')
         ax.set_xlabel('z')
         ax.set_ylabel('prob(z)')
-
-        for ax in self.axes:
-            ax.grid()
 
 
 # %% Classes to generate plots.
@@ -1165,8 +1255,8 @@ class TaylorPlots(BasePlots):
 
     def calculate_mean(self, data, weights):
         EPS = 1e-6
-        def func(x, y, axis): return np.sum(
-            x, axis=axis)/(EPS+np.sum(y, axis=axis))
+        def func(x, y, axis): 
+            return np.sum(x, axis=axis)/(EPS+np.sum(y, axis=axis))
         data = (np.array(data.data), np.array(weights.data))
         data = np.reshape(data, (2, -1))
         boot = bootstrap(data,
@@ -1184,9 +1274,84 @@ class TaylorPlots(BasePlots):
         return (.5*np.pi-rad) / (.5*np.pi)
 
     def rmse(self, cor, std, std0):
-        return np.sqrt(std**2+std0**2-2*std*std0*cor)
+        mse = std**2+std0**2-2*std*std0*cor
+        mse = np.where(np.logical_and(cor>=-1.,cor<=1.), mse, np.nan)
+        return np.sqrt(mse)
+    
+    def interval(self, data):
+        mean = np.array(data['mean'].data)
+        low = np.array(mean - data['low'])
+        low = np.where(np.isnan(low), 0.0, low)
+        high = np.array(data['high']-mean)
+        high = np.where(np.isnan(high), 0.0, high)
+        return mean, low, high
+    
+    def _calculate_stats_mean_key(self, data):
+        # Experiments
+        self.labels = np.array(data.coords['experiment'])
+        plot_points = {}
 
-    def plot_taylor(self, fig_name='taylor'):
+        for n, label in enumerate(self.labels):      
+            
+            ssEE = data.sel(experiment=label, variable='mean',
+                            metric='variance',member=[0])
+            ssTT = data.sel(experiment=label,
+                            variable='truth', metric='variance',member=[0])
+            covET = data.sel(experiment=label, variable='mean',
+                             metric='covariance', member=[0])
+            
+            ssET  = (ssEE * ssTT)**.5
+
+            # Take expectation value
+            sTT = np.array(self.calculate_mean(ssTT, np.ones_like(ssTT)))**.5
+            sEE = np.array(self.calculate_mean(ssEE, np.ones_like(ssEE)))**.5
+            corET = np.array(self.calculate_mean(covET, ssET))
+            
+            # Truth
+            plot_points['truth'] = (np.ones_like(sTT), sTT)
+            plot_points[label] = (corET, sEE)
+
+        return plot_points
+    
+    def calculate_stats_mean(self):
+        self.plot_data = {}
+        for key in list(self.data.keys()):
+            self.plot_data[key] = self._calculate_stats_mean_key(self.data[key])
+        
+    def _calculate_stats_ensemble_key(self, data):
+        # Experiments
+        self.labels = np.array(data.coords['experiment'])
+        plot_points = {}
+
+        for n, label in enumerate(self.labels):      
+            
+            ssEE = data.sel(experiment=label, variable='ensemble',
+                            metric='variance')
+            ssTT = data.sel(experiment=label,
+                            variable='truth', metric='variance')
+            covET = data.sel(experiment=label, variable='ensemble',
+                             metric='covariance')
+            
+            ssET  = (ssEE * ssTT)**.5
+
+            # Take expectation value
+            sTT = np.array(self.calculate_mean(ssTT, np.ones_like(ssTT)))**.5
+            sEE = np.array(self.calculate_mean(ssEE, np.ones_like(ssEE)))**.5
+            corET = np.array(self.calculate_mean(covET, ssET))
+            
+            
+            # Truth
+            plot_points['truth'] = (np.ones_like(sTT), sTT)
+            plot_points[label] = (corET, sEE)
+
+        return plot_points
+    
+    def calculate_stats_ensemble(self):
+        self.plot_data = {}
+        for key in list(self.data.keys()):
+            self.plot_data[key] = self._calculate_stats_ensemble_key(self.data[key])
+    
+    def plot_taylor(self, fig_name='taylor', use_mean=True):
         # Create figure
         plt.close('all')
         self.fig_name = fig_name
@@ -1198,124 +1363,78 @@ class TaylorPlots(BasePlots):
         self.handles = []
 
         # Plot output experiments.
-        for ax, key in zip(self.axes.ravel(), list(self.data.keys())):
-            self.plot_taylor2(ax, self.data[key])
-            ax.set_title(key)
-
+        for ax, var_name in zip(self.axes.ravel(), list(self.plot_data.keys())):
+            ax.set_title(var_name)
+            self._plot_taylor_ax(ax, self.plot_data[var_name])
+        
         # Add legend.
         lax = self.fig.add_axes([.5, .01, .9, .1])
         lax.axis('off')
         lax.legend(handles=self.handles, ncols=3, framealpha=1.0,
                    loc='lower center', bbox_to_anchor=[0.0, 0.0])
 
-        # Layout axes.
-        for ax in self.axes.flatten():
-            ax.set_xlim((self.cor2rad(1.05), self.cor2rad(-.05)))
-            ax.set_xticks(self.cor2rad(np.linspace(0, 1, 6)))
-            ax.xaxis.set_major_formatter(
-                lambda x, pos: np.round(self.rad2cor(x), 1))
-
-            self.set_nice_ylim(ax, include=[0.0], max_ticks=5)
-            ax.xaxis.set_label_coords(.5, -0.15)
-            ax.set_xlabel('')
-
         # Axes labels
         for ax in self.axes[-1, :]:
             ax.set_xlabel('standard deviation')
+            ax.xaxis.set_label_coords(.5, -0.2)
         for ax in self.axes[:, 0]:
             ax.set_ylabel('correlation')
 
-    def interval(self, data):
-        mean = np.array(data['mean'].data)
-        low = np.array(mean - data['low'])
-        low = np.where(np.isnan(low), 0.0, low)
-        high = np.array(data['high']-mean)
-        high = np.where(np.isnan(high), 0.0, high)
-        return mean, low, high
 
-    def plot_taylor2(self, ax, data):
-        # Experiments
-        self.labels = np.array(data.coords['experiment'])
-
+    def _plot_taylor_ax(self, ax, data):
+        labels = [key for key in data.keys() if key!='truth']
         self.handles = []
-        for n, label in enumerate(self.labels):
+        truth_cor, truth_std = data['truth']
+        lims = truth_std
+        
+        for n, label in enumerate(labels):
             self.style.assign(label)
+            exp_cor, exp_std = data[label]
             
-            ssEE = data.sel(experiment=label, variable='ensemble',
-                            metric='variance')
-            ssTT = data.sel(experiment=label,
-                            variable='truth', metric='variance')
-            covET = data.sel(experiment=label, variable='ensemble',
-                             metric='covariance')
-            ssET = data.sel(experiment=label, variable='ensemble',
-                            metric='variance')**.5
-            ssET *= data.sel(experiment=label,
-                             variable='truth', metric='variance')**.5
+            lims = np.append(lims, exp_std)
+            lims = [min(lims), max(lims)]
 
-            # Take expectation value
-            sTT = np.array(self.calculate_mean(ssTT, np.ones_like(ssTT)))**.5
-            sEE = np.array(self.calculate_mean(ssEE, np.ones_like(ssEE)))**.5
-            corET = np.array(self.calculate_mean(covET, ssET))
-            # Plot point
-            corET = self.cor2rad(corET)
-
-            # Truth
-            cor = np.linspace(-.05, 1.05, 100)
-            r = np.ones_like(cor) * sTT[0]
+            #Plot standard deviation truth
+            cor = np.linspace(-.1, 1.0, 100)
+            r = np.ones_like(cor) * truth_std[0]
             h, = ax.plot(self.cor2rad(cor), r, 'k-', label='truth')
-
-            # Plot
-            h, = ax.plot(corET[0], sEE[0], self.style.marker, label=label,
+            
+            #Plot cor,std as point
+            h, = ax.plot(self.cor2rad(exp_cor[0]), exp_std[0], 
+                         self.style.marker, label=label,
                          color=self.style.color, alpha=self.style.alpha)
             self.handles.append(h)
-
-            # Plot rmse
-            rticks = self.nice_ticks(ax.get_ylim(), max_ticks=5, include=[0])
-            r, cor = np.meshgrid(np.linspace(0, max(rticks), 100),
-                                 np.linspace(-.05, 1.05, 100))
-            rmse = self.rmse(cor, r, sTT[0])
-            levels = self.nice_ticks(rmse, max_ticks=12, include=[0.0])
-            contour = ax.contour(self.cor2rad(cor), r, rmse,
-                                 levels=levels, colors=[(0, 0, 0)], linewidths=1,
-                                 linestyles=['--'])
-            ax.clabel(contour, levels[::2], fontsize=10)
-
-            # Plot point
-            ax.errorbar(corET[0], sEE[0],
-                        xerr=np.array([[corET[0]-min(corET)],
-                                       [max(corET)-corET[0]]]),
-                        yerr=np.array([[sEE[0]-min(sEE)],
-                                       [max(sEE)-sEE[0]]]),
+            
+            # Plot point with uncertainty
+            exp_rad = self.cor2rad(exp_cor)
+            ax.errorbar(exp_rad[0], exp_std[0],
+                        xerr=np.abs(np.array([exp_rad[:0:-1]]).T-exp_rad[0]), 
+                        yerr=np.abs(np.array([exp_std[1:]]).T-exp_std[0]),
                         label=label, color=self.style.color, 
                         marker=self.style.marker, alpha=self.style.alpha)
+            
+                
+        #Axes
+        xticks = np.arange(0,1.2,.2)
+        ax.set_xticks(self.cor2rad(xticks))
+        ax.set_xticklabels([f"{tick:2.1f}" for tick in xticks])
+        ax.set_xlim((self.cor2rad(1.0), self.cor2rad(-.1)))
+            
+        yticks = self.nice_ticks(lims, max_ticks=4, minlim=0, include=[0])
+        ax.set_rlim(np.min(yticks),np.max(yticks))
+        ax.set_rticks(yticks)
+       
+        # Plot lines equal rmse
+        r, cor = np.meshgrid(np.linspace(0, max(yticks), 100),
+                              np.linspace(-.1, 1.0, 100))
+        rmse = self.rmse(cor, r, truth_std[0])
+        levels = self.nice_ticks(rmse, max_ticks=12, include=[0.0])
+        contour = ax.contour(self.cor2rad(cor), r, rmse,
+                              levels=levels, colors=[(0, 0, 0)], linewidths=1,
+                              linestyles=['--'])
+        ax.clabel(contour, levels[::2], fontsize=10)
 
-    def plot_taylor1(self, ax, data):
-
-        # Calculate confidence intervals
-        mean = self.calculate_mean(data)
-        # Standard deviation
-        sel = {'variable': 'RMSE'}
-        std0, stdL, stdH = self.interval(mean.sel(sel))
-        # Correlation
-        sel = {'variable': 'correlation'}
-        corr0, corrL, corrH = self.interval(mean.sel(sel))
-        corr0 = .5*np.pi * (1-corr0)
-        corrL, corrH = .5*np.pi*corrH, .5*np.pi*corrL
-
-        # Experiments
-        self.labels = np.array(data.coords['experiment'])
-
-        self.handles = []
-        for n, label in enumerate(self.labels):
-            self.style.assign(label)
-            ax.errorbar(corr0[n], std0[n],
-                        xerr=np.array([corrL[n:n+1], corrH[n:n+1]]),
-                        yerr=np.array([stdL[n:n+1], stdH[n:n+1]]),
-                        label=label, color=self.style.color, marker=self.style.marker)
-            h, = ax.plot(corr0[n], std0[n], self.style.marker, label=label,
-                         color=self.style.color)
-            self.handles.append(h)
-
+            
 
 class CirclePlot(BasePlots):
     """ 

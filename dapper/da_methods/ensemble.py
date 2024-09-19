@@ -2,6 +2,7 @@
 
 import numpy as np
 import scipy.linalg as sla
+import dataclasses
 from numpy import diag, eye, sqrt, zeros
 
 import dapper.tools.multiproc as multiproc
@@ -32,17 +33,17 @@ class EnProcessor:
         """ Class constructor. """
         self.options = kwargs
     
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, data):
         """ Function to be called on background ensemble."""
-        return E, Y, D 
+        return data 
     
-    def assimilate(self, k, ko, y, E, Y, D):
+    def assimilate(self, data):
         """ Function carrying out DA correction."""
-        return E, Y, D
+        return data
 
-    def post(self, k, ko, y, E, Y, D):
+    def post(self, data):
         """ Function to be called on analysis ensemble. """
-        return E, Y, D
+        return data
     
     def set_hhm(self, HMM):
         """ Link to Hidden Markov model."""
@@ -59,60 +60,61 @@ class EnProcessor:
     def clean(self):
         """ Clean memory associated with this process."""
 #----------------------------------------------------------------------
-        
+       
 class ControlCovariance(EnProcessor):
     """ 
     Calculate cross-covariance between ensemble members
     and predictions in observation space. 
     """
     
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         obs = self.HMM.ObsNow
-        Y = obs(E)
-        Y = np.array(Y) - np.mean(Y, axis=0, keepdims=True)
-        return E, Y, D
+        state.Y = obs(state.E)
+        state.Y = np.array(state.Y) - np.mean(state.Y, axis=0, keepdims=True)
+        return state
     
 class AngleControlCovariance(EnProcessor):
     
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         obs = self.HMM.ObsNow
         j   = complex(0,1)
-        Y   = np.exp(j * obs(E))
-        M   = np.prod(Y**(1/np.size(Y,0)), axis=0, keepdims=True)
-        Y   = Y/M
-        Y   = np.imag(np.log(Y))
+        Y   = np.exp(j * obs(state.E))
+        M   = np.prod(state.Y**(1/np.size(state.Y,0)), axis=0, keepdims=True)
+        state.Y   = state.Y/M
+        state.Y   = np.imag(np.log(state.Y))
         
         #Also do D. Might need to use AngleInno prior to this. 
-        D = np.imag(np.log(np.exp(j*D)))
+        state.D = np.imag(np.log(np.exp(j*state.D)))
         
-        return E, Y, D        
+        return state
 
 class Inno(EnProcessor):
     """ 
     Transform observation into innovation. 
     """
         
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         #observation operator
         obs = self.HMM.ObsNow
         #Innovations
-        D = np.mean(y[None,...] - obs(E), axis=0, keepdims=True) 
-        return E, Y, D
+        state.D = np.mean(state.y[None,...] - obs(state.E), axis=0, 
+                          keepdims=True) 
+        return state
     
 class AngleInno(EnProcessor):
     """ 
     Smallest error modulo 2pi. 
     """
     
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         j = complex(0,1)
         #observation operator
         obs = self.HMM.ObsNow
         #Innovations
-        D = np.exp(j*y[None,...]) / np.exp(j*obs(E))
-        D = np.prod(D**(1/np.size(D,0)), axis=0, keepdims=True)
-        D = np.imag(np.log(D))
-        return E, Y, D
+        state.D = np.exp(j*state.y[None,...]) / np.exp(j*obs(state.E))
+        state.D = np.prod(state.D**(1/np.size(state.D,0)), axis=0, keepdims=True)
+        state.D = np.imag(np.log(state.D))
+        return state
     
 class StochasticInno(Inno):
     """ 
@@ -124,24 +126,24 @@ class StochasticInno(Inno):
         if 'No' in kwargs:
             self.N = kwargs['No']
         
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         #observation operator
         obs = self.HMM.ObsNow
         #Deviations
-        Eo = obs(E[:self.N])
+        Eo = obs(state.E[:self.N])
         Eo = obs.noise.add_sample(Eo)
         #If number of innovations is larger than ensemble members,
         #bootstrap. 
-        if self.N > np.size(E,0):
+        if self.N > np.size(state.E,0):
             Eo = Eo[np.random.randint(0, len(Eo), size=(self.N,))]
         #Calculate innovations.
-        D = y[None,...] - Eo     
-        D = np.array(D)
+        state.D = state.y[None,...] - Eo     
+        state.D = np.array(state.D)
         
         #Save innovation vectors. 
-        self.D = D
+        self.D = state.D
         
-        return E, Y, D
+        return state
 
 class Inflator(EnProcessor):
     """
@@ -160,25 +162,25 @@ class PostInflator(Inflator):
         else:
             self.inflation = infl
         
-    def post(self, k, ko, y, E, Y, D):
-        A, mu = center(E)
-        E = mu + A * self.inflation(k,ko)
-        return E, Y, D
+    def post(self, state):
+        A, mu = center(state.E)
+        state.E = mu + A * self.inflation(state.k,state.ko)
+        return state
         
 class Rotator(EnProcessor):
     """
     Rotate ensemble around vector 1. 
     """ 
     
-    def post(self, k, ko, y, E, Y, D):
-        A, mu = center(E)
-        N, Nx = E.shape
+    def post(self, state):
+        A, mu = center(state.E)
+        N, Nx = state.E.shape
         T     = eye(N)
         
         T = genOG_1(N, True) @ T
-        E = mu + T@A
+        state.E = mu + T@A
         
-        return E, Y, D
+        return state
     
 #----------------------------------------------------------------------------------------
 # Smoothers. Act as pre/post processing to filter step. 
@@ -233,19 +235,19 @@ class AugmentedSmoother(EnProcessor):
         super().__init__(**kwargs)
         self.Ea = EnStack(lag+1)
         
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         #Save ensemble
-        self.Ea.push(k, E)
+        self.Ea.push(state.k, state.E)
         #Transform to time,space-states
-        E = self._times2state(self.Ea.stack)
-        return E, Y, D
+        state.E = self._times2state(self.Ea.stack)
+        return state
         
-    def post(self, k, ko, y, E, Y, D):       
+    def post(self, state):       
         #Transform back from time,space-states 
-        self.Ea.stack = self._state2times(E)   
+        self.Ea.stack = self._state2times(state.E)   
         #Return latest ensemble.      
-        _, E = self.Ea.top()
-        return E, Y, D
+        _, state.E = self.Ea.top()
+        return state
     
     def _times2state(self, E):
         """ Transform multiple times into 1 state."""
@@ -280,17 +282,17 @@ class EnRts(EnProcessor):
             decorr = lambda k, ko: decorr
         self.decorr = decorr 
         
-    def pre(self, k, ko, y, E, Y, D):    
-        self.Ef.push(k, E)
-        return E, Y, D
+    def pre(self, state):    
+        self.Ef.push(state.k, state.E)
+        return state
             
-    def post(self, k, ko, y, E, Y, D):
-        self.Ea.push(k, E)
+    def post(self, state):
+        self.Ea.push(state.k, state.E)
         
         if self.Ea.size == self.lag+1:
-            self._backward_pass(ko)
+            self._backward_pass(state.ko)
         
-        return E, Y, D
+        return state
         
     def _backward_pass(self, ko):
         Ef, Ea = self.Ef.stack, self.Ea.stack
@@ -324,38 +326,45 @@ class VaeTransform(EnProcessor):
         self.ref_model = model 
         self.model     = model  
         
-    def pre(self, k, ko, y, E, Y, D): 
-        self.train(E, D)
+    def pre(self, state): 
+        self.train(state.E, state.D)
         
         #Convert background ensemble in state space to latent space. 
-        _, _, E = self.model.encoder.predict(E, verbose=self.hp.get('verbose')) 
-        E = np.array(E)
+        _, _, state.E = self.model.encoder.predict(state.E, 
+                                                   verbose=self.hp.get('verbose')) 
+        x_latent, _, _ = self.model.encoder.predict(state.x[None,:], 
+                                                    verbose=False)
+        state.E, x_latent = np.array(state.E), np.array(x_latent)
         
         #Save latent ensemble
         save_latent = True
         if not hasattr(self.stats,'Elatent') and save_latent:
             self.stats.Elatent = {}
-            self.stats.Elatent['f'] = E.reshape((1,)+E.shape)
-            self.stats.Elatent['a'] = np.empty((0,)+E.shape)
+            self.stats.Elatent['f'] = state.E.reshape((1,)+state.E.shape)
+            self.stats.Elatent['a'] = np.empty((0,)+state.E.shape)
+            self.stats.Elatent['t'] = x_latent
         elif save_latent:
             self.stats.Elatent['f'] = np.concatenate((self.stats.Elatent['f'],
-                                                      E[None,...]), axis=0)
+                                                      state.E[None,...]), axis=0)
+            self.stats.Elatent['t'] = np.concatenate((self.stats.Elatent['t'],
+                                                      x_latent), axis=0)
+            
+        return state
         
-        return E, Y, D
-        
-    def post(self, k, ko, y, E, Y, D):
+    def post(self, state):
         from dapper.vae.basic import rotate        
         
         #Save for inspection.
         if hasattr(self.stats,'Elatent'):
             self.stats.Elatent['a'] = np.concatenate((self.stats.Elatent['a'],
-                                                      E[None,...]), axis=0)
+                                                      state.E[None,...]), axis=0)
         
         #Convert latent background ensemble to state space. 
-        _, _, _, E = self.model.decoder.predict(E, verbose=self.hp.get('verbose')) 
-        E = np.array(E)
+        _, _, _, state.E = self.model.decoder.predict(state.E, 
+                                                      verbose=self.hp.get('verbose')) 
+        state.E = np.array(state.E)
         
-        return E, Y, D
+        return state
         
     def train(self, E, D):
         pass
@@ -456,31 +465,30 @@ class InnoVaeTransform(VaeTransform):
         self.model = None
         self.previous_M = 0
         
-    def pre(self, k, ko, y, E, Y, D):
+    def pre(self, state):
         from matplotlib import pyplot as plt 
 
-        Y0 = Y+0
-        D0 = D+0
-        self.train(E, y)
+        Y0 = state.Y+0
+        D0 = state.D+0
+        self.train(state.E, state.y)
             
         #Convert obs-control covariance in observation space. 
-        Y = y[None,...] - self.HMM.ObsNow(E)
-        _, _, Y = self.model.encoder.predict(Y)
-        Y = -Y - np.mean(-Y, axis=0, keepdims=True)
-        Y = np.array(Y)
+        state.Y = state.y[None,...] - self.HMM.ObsNow(state.E)
+        _, _, state.Y = self.model.encoder.predict(state.Y)
+        state.Y = -state.Y - np.mean(-state.Y, axis=0, keepdims=True)
+        state.Y = np.array(state.Y)
             
         #Convert inno ensemble in state space to latent space. 
-        _, _, N = self.model.encoder.predict(D*0)
-        _, _, D = self.model.encoder.predict(D)
-        D = D - N
-        D = np.array(D)
+        _, _, N = self.model.encoder.predict(state.D*0)
+        _, _, D = self.model.encoder.predict(state.D)
+        state.D = np.array(D - N)
         
-        return E, Y, D
+        return state
     
-    def post(self, k, ko, y, E, Y, D):
+    def post(self, state):
         #_, _, _, _, D = self.model.decoder.predict(D)
                 
-        return E, Y, D
+        return state
         
     def train(self, E, y):
         
@@ -561,46 +569,48 @@ class EtkfD(Assimilator):
     Carry out ETKF using covariance estimated from innovations. 
     """
         
-    def assimilate(self, k, ko, y, E, Y, D):
+    def assimilate(self, state):
         #Calculate ensemble perturbations. 
-        A, Emu = center(E)
+        A, Emu = center(state.E)
         
         #Reshape input. Each ensemble member is a column. 
-        Y, D = Y.T, D.T
+        state.Y, state.D = state.Y.T, state.D.T
         A = A.T
         
         #Covariance of innovations R+HBH
-        C = np.cov(D, rowvar=True, ddof=1)
+        C = np.cov(state.D, rowvar=True, ddof=1)
         if np.ndim(C)==0:
             C = np.reshape(C,(1,1))
-        Q,L,Qt = np.linalg.svd(np.eye(self.N)-Y.T@np.linalg.pinv(C)@Y / (self.N-1))
+        Q,L,Qt = np.linalg.svd(np.eye(self.N)-state.Y.T@np.linalg.pinv(C)@state.Y 
+                               / (self.N-1))
         
         #Correction to mean. 
-        Kd = A@Y.T@np.linalg.pinv(C)@np.mean(D, axis=1, keepdims=True)/(self.N-1)
+        Kd = A@state.Y.T@np.linalg.pinv(C)@np.mean(state.D, axis=1, 
+                                                   keepdims=True)/(self.N-1)
         #Correction to ensemble perturburbations.
         A = A@Q@np.diag(np.sqrt(L))@Qt
         
         #Analysis ensemble members. 
-        E = Emu[None,...] + A.T + Kd.T
+        state.E = Emu[None,...] + A.T + Kd.T
         
-        return E, Y, D
+        return state
     
 class PertObs(Assimilator):
     """
     DA using classic, perturbed observations (Burgers'98) 
     """
     
-    def assimilate(self, k, ko, y, E, Y, D):        
+    def assimilate(self, state):        
         R  = self.HMM.ObsNow.noise.C
-        A  = E - np.mean(E, axis=0, keepdims=True)
-        C  = Y.T @ Y + R * self.N1
-        YC = Y@np.linalg.pinv(C)
+        A  = state.E - np.mean(state.E, axis=0, keepdims=True)
+        C  = state.Y.T @ state.Y + R * self.N1
+        YC = state.Y@np.linalg.pinv(C)
         KG = A.T @ YC 
-        HK = Y.T @ YC 
-        dE = (KG @ D.T).T 
-        E  = E + dE 
+        HK = state.Y.T @ YC 
+        dE = (KG @ state.D.T).T 
+        state.E  = state.E + dE 
         
-        return E, Y, D
+        return state
     
 #---------------------------------------------------------------------
 
@@ -788,9 +798,9 @@ class EnkfnAssimilator(Assimilator,ABC):
         
         return l1 
           
-    def assimilate(self, k, ko, y, E, Y, D):
+    def assimilate(self, state):
         #Process input and save into object. 
-        self.build_attributes(Y, D)
+        self.build_attributes(state.Y, state.D)
         #Limited size correction coefficient
         l1 = self.solve_l1()
         #Sqrt update 
@@ -799,11 +809,11 @@ class EnkfnAssimilator(Assimilator,ABC):
         self.T  = self.hessian(self)
         
         #Ensemble mean and deviations thereof. 
-        mu = np.mean(E, axis=0, keepdims=True)
-        A  = E - mu 
-        E  = mu + self.w@A + self.T@A
+        mu = np.mean(state.E, axis=0, keepdims=True)
+        A  = state.E - mu 
+        state.E  = mu + self.w@A + self.T@A
         
-        return E, Y, D
+        return state
     
     def build_attributes(self, Y, D):
         self.R = self.HMM.ObsNow.noise.C 
@@ -943,19 +953,19 @@ class SqrtAssimilator(Assimilator):
         else:
             self.solver = solver 
     
-    def assimilate(self, k, ko, y, E, Y, D):
+    def assimilate(self, state):
         #Observation error covariance.
         R  = self.HMM.ObsNow.noise.C
         #Ensemble mean and deviations thereof. 
-        mu = np.mean(E, axis=0, keepdims=True)
-        A  = E - mu 
+        mu = np.mean(state.E, axis=0, keepdims=True)
+        A  = state.E - mu 
         #Calculate 
-        Pw, T = self.solver(R, Y, D)
-        w  = D @ R.inv @ Y.T @ Pw
-        HK = R.inv @ Y.T @ Pw @ Y
-        E  = mu + w@A + T@A
+        Pw, T = self.solver(R, state.Y, state.D)
+        w  = state.D @ R.inv @ state.Y.T @ Pw
+        HK = R.inv @ state.Y.T @ Pw @ state.Y
+        state.E  = mu + w@A + T@A
 
-        return E, Y, D
+        return state
     
     @staticmethod 
     def explicit_solver(R,Y,D):
@@ -1015,24 +1025,25 @@ class SerialAssimilator(Assimilator,ABC):
     IMPORTANT: this Assimilator also update Y and D. 
     """
         
-    def assimilate(self, k, ko, y, E, Y, D):
+    def assimilate(self, state):
         #Observation covariance matrix
         R = self.HMM.ObsNow.noise.C
         #Ensemble perturbations 
-        mu = np.mean(E, axis=0, keepdims=True)
-        A  = E - mu
+        mu = np.mean(state.E, axis=0, keepdims=True)
+        A  = state.E - mu
         # Observations assimilated one-at-a-time:
-        inds = self.sorter(y, R, A)
+        inds = self.sorter(state.y, R, A)
         #Requires de-correlation:
-        D = D @ R.sym_sqrt_inv.T
-        Y = Y @ R.sym_sqrt_inv.T
+        state.D = state.D @ R.sym_sqrt_inv.T
+        state.Y = state.Y @ R.sym_sqrt_inv.T
         # Carry out actual DA
-        E, Y, D = self.sqrt_assimilate(inds, mu, A, Y, D)
+        state.E, state.Y, state.D = self.sqrt_assimilate(inds, mu, A, 
+                                                         state.Y, state.D)
         #Recorrelate
-        Y = Y @ R.sym_sqrt.T 
-        D = D @ R.sym_sqrt.T
+        state.Y = state.Y @ R.sym_sqrt.T 
+        state.D = state.D @ R.sym_sqrt.T
         
-        return E, Y, D
+        return state
     
     @staticmethod 
     def mono_sorter(y, R, A):
@@ -1177,18 +1188,28 @@ class Denkf(Assimilator):
     Uses "Deterministic EnKF" (sakov'08)
     """
     
-    def assimilate(self, k, ko, y, E, Y, D):
-        A  = E - np.mean(E, axis=0, keepdims=True)
-        d  = np.mean(D,axis=0)
+    def assimilate(self, state):
+        A  = state.E - np.mean(state.E, axis=0, keepdims=True)
+        d  = np.mean(state.D,axis=0)
         R  = self.HMM.ObsNow.noise.C
-        C  = Y.T @ Y + R.full*self.N1
-        YC = Y@np.linalg.pinv(C)
+        C  = state.Y.T @ state.Y + R.full*self.N1
+        YC = state.Y@np.linalg.pinv(C)
         KG = A.T @ YC
-        HK = Y.T @ YC
-        E  = E + KG@d - 0.5*(KG@Y.T).T
-        return E, Y, D
+        HK = state.Y.T @ YC
+        state.E  = state.E + KG@d - 0.5*(KG@state.Y.T).T
+        return state
         
 #----------------------------------------------------------------------
+
+@dataclasses.dataclass 
+class EnState:
+    k : int   #Timestep
+    ko : int  #DA timestep
+    y : np.ndarray #Observation
+    x : np.ndarray #Truth 
+    E : np.ndarray #Ensemble of states
+    D : np.ndarray #Ensemble of innovations
+    Y : np.ndarray #Ensemble of cross-covariance
 
 @ens_method        
 class EnDa:
@@ -1225,14 +1246,15 @@ class EnDa:
             processors = [process for process in self.processors 
                           if process.is_active(k,ko)]
             
-            D, Y = [], []
+            state = EnState(k, ko, yyNow, xx[k], E, [], [])
             for process in processors[ 0:: 1]:
-                E, Y, D = process.pre(k, ko, yyNow, E, Y, D)
+                state = process.pre(state)
             for process in processors[ 0:: 1]:
-                E, Y, D = process.assimilate(k, ko, yyNow, E, Y, D)
+                state = process.assimilate(state)
             for process in processors[-1::-1]:
-                E, Y, D = process.post(k, ko, yyNow, E, Y, D)
+                state = process.post(state)
 
+            E = state.E
             if ko is not None:
                 self.stats.assess(k, ko, E=E)
                 
