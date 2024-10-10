@@ -150,6 +150,8 @@ class RV_beta(RV):
         b = np.reshape(b, shape)
 
         return a, b
+    
+
 
 # TODO 4: improve constructor (treatment of arg cases is too fragile).
 
@@ -235,6 +237,63 @@ class GaussRV(RV_with_mean_and_cov):
         R = self.C.Right
         D = rng.standard_normal((N, len(R))) @ R
         return D
+    
+class SkewedGaussRV(RV_with_mean_and_cov):
+    """ Skewed Gaussian. """
+    
+    def __init__(self, mu=0, C=0, skew=0, M=None, **kwargs):
+        #Parameters 
+        self.skew = skew
+        delta = self.skew / np.sqrt(1+self.skew**2)
+        
+        if 'scale' in kwargs:
+            scale = kwargs['scale']
+            C = scale**2 * (1 - delta**2*2/np.pi)
+        else:
+            scale = np.sqrt(C / (1-delta**2*2/np.pi))
+           
+        #Set loc such that output sample has zero mean. 
+        if 'loc' in kwargs:
+            loc = kwargs['loc']
+            mu = kwargs['loc'] + scale * delta * np.sqrt(2/np.pi)
+        elif 'mode' in kwargs:
+            pd = np.sqrt(2/np.pi) * delta 
+            if np.isclose(pd, 0.0):
+                mo = 0.0
+            else:
+                mo = pd - (1-np.pi/4)*pd**3/(1-pd**2)-np.sign(self.skew)/2*np.exp(-2*np.pi/np.abs(self.skew))
+            loc = kwargs['mode'] - scale * mo
+            mu = loc + scale * delta * np.sqrt(2/np.pi)
+        else:
+            loc = mu - scale * delta * np.sqrt(2/np.pi)
+            
+        
+        self.rv = stats.skewnorm(self.skew, loc=loc, scale=scale)
+        
+        #Number of observations
+        if M is not None:
+            self.M = M
+        elif not isinstance(mu, (float, int, np.floating, np.integer)):
+            self.M = len(mu)
+        elif not isinstance(C, (float, int, np.floating, np.integer)):
+            self.M = len(C)
+                
+        #Variance
+        if isinstance(C, (float, int, np.floating, np.integer)):
+            self.C = CovMat(C*np.ones(self.M), 'diag')
+        else:
+            self.C = CovMat(C, 'diag')
+            
+        self.mu = np.ones((self.M,)) * mu 
+            
+    def _sample(self, N):
+        return self.rv.rvs((self.M,))
+    
+    def sample(self, N):
+        if self.C == 0:
+            return np.zeros((N, self.M))
+        else:
+            return self._sample(N)
 
 
 class LaplaceRV(RV_with_mean_and_cov):

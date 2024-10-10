@@ -172,7 +172,7 @@ def depreciated_create_obs_factory(ind, sig, distribution):
     
     return create_obs
 
-def create_obs_factory(func, sig, distribution='normal'):  
+def create_obs_factory(func, sig, distribution=('normal',)):  
     """ 
     Create observation operator including observational error 
     probability distribution. 
@@ -193,11 +193,14 @@ def create_obs_factory(func, sig, distribution='normal'):
             else:
                 return np.reshape([func(e) for e in E], (-1,M))
             
-        if 'normal' in distribution:
+        if 'normal' in distribution[0]:
             C = sig**2 * np.ones((M,))
             noise = tools.randvars.GaussRV(mu=0,C=C,M=M)
-        elif 'beta' in distribution:
+        elif 'beta' in distribution[0]:
             noise = tools.randvars.RV_beta(sig**2, lbounds=-1, ubounds=1, M=M)
+        elif 'skewedNormal' in distribution[0]:
+            noise = tools.randvars.SkewedGaussRV(C=sig**2, M=M, 
+                                                 skew=distribution[1], mode=0)
         else:
             raise Exception(f"distribution {distribution} is unknown")
         
