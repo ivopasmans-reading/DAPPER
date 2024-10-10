@@ -10,7 +10,7 @@ Code for experiment 1 in the paper.
 
 from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
 from vae_plots import plot_exp, calculate_output, MoviePlots, TimePlots
-import os
+import os, sys
 import xarray as xr
 
 #Create the settings for the experiment
@@ -18,10 +18,15 @@ exp_name = "paper_exp1"
 xp_parameters = {}
 clima_parameters = {}
 
-exp = DaExperiment(exp_name, Nruns=8, Nclima=8,
-                   da_model=DapperModel(),
-                   xp_parameters=xp_parameters, 
-                   clima_parameters=clima_parameters)
+exps = []
+for rotation_rate in [.01, .02, .04, .06, .08, .1, .12, .15, .2]:
+    exp = DaExperiment(exp_name+"_rate{:02d}".format(int(rotation_rate*100)), 
+                       Nruns=8, Nclima=8,
+                       da_model=DapperModel(rotation_rate=rotation_rate),
+                       xp_parameters=xp_parameters, 
+                       clima_parameters=clima_parameters)
+    exp.rotation_rate = rotation_rate
+    exps.append(exp)
 
 def create_plots(exp):
     """ Plot the experiment. """
@@ -52,8 +57,9 @@ def create_plots(exp):
   
 if __name__=='__main__':
     #Run experiment
-    run_exp(exp) 
-
+    iexp = int(sys.argv[2])
+    if iexp<len(exps):
+        run_exp(exps[iexp])
     
 
     

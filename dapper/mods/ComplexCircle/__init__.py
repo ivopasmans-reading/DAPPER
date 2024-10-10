@@ -13,8 +13,6 @@ from dapper.tools.seeding import set_seed
 #complex number 
 I = complex(0,1)
 
-#Rate that influences rotation
-rate = 0.1
 
 def rotate2d(theta, data, axis=-1):
     theta = np.arcsin(theta)
@@ -26,7 +24,7 @@ def rotate2d(theta, data, axis=-1):
                     
 
 #Dynamical model.
-def step_factory(amplitude=0.0, period=50):
+def step_factory(amplitude=0.0, period=50, rotation_rate=0.1):
     omega = 2*np.pi/period
     dr = lambda t : amplitude*omega*np.cos(omega*t)
     
@@ -39,7 +37,7 @@ def step_factory(amplitude=0.0, period=50):
         #Scale
         scale = 1.0 + dr(t) * dt / polar[:,0]
         #Rotate
-        dtheta = rate * polar[:,1]
+        dtheta = rotation_rate * polar[:,1]
         for n, dtheta1 in enumerate(dtheta):
             x[n,:] =  rotation(dtheta1) @ (x[n,:] * scale[n])
    
@@ -48,7 +46,7 @@ def step_factory(amplitude=0.0, period=50):
     
     return step 
 
-def spiral_factory(amplitude=0.0, period=500):
+def spiral_factory(amplitude=0.0, period=500, rotation_rate=0.1):
     omega = 2*np.pi/period
     dr = lambda t : amplitude / period
     
@@ -61,7 +59,7 @@ def spiral_factory(amplitude=0.0, period=500):
         #Scale
         scale = 1.0 + dr(t) * dt / polar[:,0]
         #Rotate
-        dtheta = rate * polar[:,1]
+        dtheta = rotation_rate * polar[:,1]
         for n, dtheta1 in enumerate(dtheta):
             x[n,:] =  rotation(dtheta1) @ (x[n,:] * scale[n])
    
@@ -70,7 +68,7 @@ def spiral_factory(amplitude=0.0, period=500):
     
     return step 
 
-def uhlenbeck_factory(sig=0.0, friction=0.0):
+def uhlenbeck_factory(sig=0.0, friction=0.0, rate=0.1):
     
     def step(x,t,dt):
         """ Step function if Cartesian coordinates are used. """

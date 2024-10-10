@@ -9,8 +9,8 @@ Code for experiment 1 in the paper.
 """
 
 from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
-from vae_plots import plot_exp, calculate_output, MoviePlots, TimePlots
-import os, sys
+from vae_plots import plot_exp, calculate_output, MoviePlots, TimePlots, SeriesPlots, set_styles
+import os, sys, re, dill
 import xarray as xr
 
 #Create the settings for the experiment
@@ -50,6 +50,25 @@ def create_plots(exp):
     
     plotter.close()
     return output
+
+
+def create_amplitude_plot(exps):
+    datas = []
+    plot = SeriesPlots('amplitude',FIG_DIR)
+    pattern = re.compile(".*_([0-9]+).pkl") 
+    for exp in exps:
+        with open(os.path.join(exp.filepath),'rb') as stream:
+            data_for, data_ana = dill.load(stream)
+            datas.append(data_for)
+            
+        amplitude = int(re.match(pattern, exp.filepath)[1]) / 10.
+        plot.add_exp(data_for, amplitude)
+        
+    plot = set_styles(plot)
+    plot.plot()
+    
+    return datas
+
 
 #%%
   

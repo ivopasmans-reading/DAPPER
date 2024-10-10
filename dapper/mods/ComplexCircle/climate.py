@@ -88,13 +88,16 @@ class DapperModel:
     obs_type : tuple = ('normal',)
     obs_sig : float = 0.1
     amplitude : float = 0.0
+    rotation_rate : float = 0.1
 
     def __call__(self, K, dko, seed):
         """ Run the DAPPER model and create truth and observations. """
 
         # DAPPER dynamic model object.
-        Dyn = {'M': 2, 'model': circle.step_factory(amplitude=self.amplitude),
-               'linear': circle.step_factory(amplitude=self.amplitude), 'noise': 0}
+        Dyn = {'M': 2, 'model': circle.step_factory(amplitude=self.amplitude, 
+                                                    rotation_rate=self.rotation_rate),
+               'linear': circle.step_factory(amplitude=self.amplitude,
+                                             rotation_rate=self.rotation_rate), 'noise': 0}
 
         # DAPPER observation operator.
         obs = circle.create_obs_factory(self.obs_func, self.obs_sig,
