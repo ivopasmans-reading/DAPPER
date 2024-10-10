@@ -511,15 +511,17 @@ class InnoVaeTransform(VaeTransform):
             inno_layers = set([layer.name for layer in inno.layers])
             shared_layers = [name for name in set.intersection(inno_layers, ref_layers)
                              if 'hidden' in name and not 'hidden00' in name]
+
             for name in shared_layers:
                 inno_layer = inno.get_layer(name)
                 ref_layer = ref.get_layer(name) 
                 inno_layer.set_weights(ref_layer.get_weights())
                 
-        copy_matched(self.ref_model.encoder, self.model.encoder)
+        #copy_matched(self.ref_model.encoder, self.model.encoder)
         copy_matched(self.ref_model.decoder, self.model.decoder)
         
         #Create pseudo innovations 
+        
         ind = np.random.randint(0, np.size(E,0), size=(self.N,))
         E0  = np.take(E, ind, axis=0)
         D0  = y[None,...] * np.ones((self.N,1))
