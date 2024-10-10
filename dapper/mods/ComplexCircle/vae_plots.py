@@ -14,7 +14,6 @@ from dapper.mods import ComplexCircle as circle
 from scipy.stats import norm, bootstrap, poisson
 import os
 import shutil
-from abc import ABC, abstractmethod
 import scipy
 import xarray as xr
 
@@ -80,6 +79,61 @@ def set_styles(plot):
     for xp in xps:
         plot.style.assign(xp)
     return plot
+
+def filter_data(data):
+    """ Remove certain seeds from data. """
+    seeds = data.coords['seed']
+    seeds = [s for s in seeds if s < 1200 or s >= 1300]
+    return data.sel(seed=seeds)
+
+#%% Default plot routines. 
+
+def plot_exp(exp, exp_fig_dir):
+    """ Plot default set of figures. """
+    
+    #Create directory to store figures. 
+    if not os.path.exists(exp_fig_dir):
+        os.mkdir(exp_fig_dir)
+    
+    for stage, data in zip(['forecast', 'analysis'], [exp.data_for, exp.data_ana]):
+        #Show continuous rank probability score for all experiments next to each other.
+        plot_data = filter_data(data['crps'])
+        plotHist = SingleCrpsPlots(exp_fig_dir, plot_data)
+        plotHist.style = CompoundedStyles()
+        plotHist = set_styles(plotHist)
+        plotHist.plot_crps('crps_single_'+stage)
+        plotHist.save()
+        
+        #Plot probility scatter plot of truth vs. forecast/analysis. 
+        plot_data = filter_data(data['histogram'])
+        plotHist = ProbDensityPlots(exp_fig_dir, plot_data)
+        plotHist.plot_scatter_density('scatter_'+stage)
+        plotHist.save()
+        
+        #Plot probability scatter plot of truth vs. error. 
+        plot_data = filter_data(data['histogram'])
+        plotHist = ErrorProbDensityPlots(exp_fig_dir, plot_data)
+        plotHist.plot_scatter_density('error_scatter_'+stage)
+        plotHist.save()
+    
+        #Decomposes CRPS into its different components
+        plot_data = filter_data(data['crps'])
+        plotHist = CrpsPlots(exp_fig_dir, plot_data)
+        plotHist.plot_crps('crps_'+stage)
+        plotHist.save()
+    
+        #Shows the classical RMSE
+        plot_data = data['rmse']
+        plotHist = TaylorPlots(exp_fig_dir, plot_data)
+        plotHist.style = CompoundedStyles()
+        plotHist = set_styles(plotHist)
+        plotHist.calculate_stats_mean()
+        plotHist.plot_taylor('taylor_'+stage)
+        plotHist.save()
+        
+
+        
+
 
 
 # %% Abstract classes for plotting.
@@ -423,10 +477,21 @@ class BasePlots:
 
     def save(self):
         """ Save figure to file path in self.fig_path. """
-        if self.fig_dir is not None:
-            if not os.path.exists(self.fig_dir):
-                os.mkdir(self.fig_dir)
-            self.fig.savefig(self.fig_path+'.png', dpi=400, format='png')
+        fig_dir = os.path.dirname(self.fig_path)
+        if not os.path.exists(fig_dir):
+            os.mkdir(fig_dir)
+
+        self.fig.savefig(self.fig_path+'.png', dpi=400, format='png')
+            
+    def add_subplot_labels(self):
+        for n, ax in enumerate(self.axes.ravel()):
+            ax.annotate(chr(97+n)+')', (-.05,1.05), xycoords='axes fraction',
+                        horizontalalignment='right',
+                        verticalalignment='bottom')
+            
+    def close(self):
+        plt.close('all')
+            
 
 class ConfidencePlots(BasePlots):
     """ 
@@ -855,7 +920,41 @@ class EnsError:
             output = xr.merge([output, mean, variance, rho])
 
         return output
+    
+def calculate_output(xp):
+    datas = []
+    datas.append(xr.DataArray(np.array(xp.stats.xx)[xp.HMM.tseq.tto], 
+                              dims=('time','state_dim'),
+                              coords={'time':('time',xp.HMM.tseq.tto)},
+                              name='truth'))
+              
+    datas.append(xr.DataArray(np.array(xp.stats.yy[...,None] if np.ndim(xp.stats.yy)==1 
+                                       else xp.stats.yy), 
+                              dims=('time','obs_dim'),
+                              coords={'time':('time',xp.HMM.tseq.tto)},
+                              name='obs'))
+                 
+    datas.append(xr.DataArray(np.array([xp.stats.E.f, xp.stats.E.a]),
+                              dims=('stage','time','member','state_dim'), 
+                              coords={'stage':('stage',['forecast','analysis']),
+                                      'time':('time',xp.HMM.tseq.tto)},
+                              name='ensemble'))
+    
+    if hasattr(xp.stats,'Elatent'):
+        datas.append(xr.DataArray(np.array([xp.stats.Elatent['f'], 
+                                            xp.stats.Elatent['a']]),
+                                  dims=('stage','time','member','latent_dim'), 
+                                  coords={'stage':('stage',['forecast','analysis']),
+                                          'time':('time',xp.HMM.tseq.tto)},
+                                  name='latent_ensemble'))
+        
+    for n,data in enumerate(datas):
+        datas[n] = datas[n].expand_dims({'experiment':1,'seed':1})
+        datas[n] = datas[n].assign_coords({'experiment':('experiment',[xp.name]),
+                                           'seed':('seed',[xp.seed])})
 
+    return xr.merge(datas)
+        
 
 def calculate_stat(stat, xp, xx, seed, stage='analysis', **kwargs):
     """ Calculate statistics for each of the 4 variables x,y,radius angle. """
@@ -954,7 +1053,176 @@ class ReconstructionPlot(BasePlots):
         ax.set_ylabel('prob(z)')
 
 
-# %% Classes to generate plots.
+#%% Classes to plot different figures.  
+
+class TimePlots(BasePlots):
+    
+    def __init__(self, fig_dir, data):
+        super().__init__(fig_dir)
+        self.data = data
+        
+    def plot_prob_series(self, fig_name='prob_series'):
+        self.fig_name = fig_name
+        names = self.data['experiment'].data 
+        nrow = len(names)
+        ncol = 2
+        
+        self.fig = plt.figure(figsize=(ncol*4,nrow*4))
+        self.axes = self.fig.subplots(nrow,ncol).reshape((nrow,ncol))
+        self.fig.subplots_adjust(wspace=.3, hspace=.24)
+        
+        for ax,name in zip(self.axes, names):
+            for ind in range(2):
+                data = self.data.sel(experiment=name, state_dim=ind, stage='forecast')
+                binned = self._calculate_binning(data)
+                im = self._plot_binned(ax[ind], binned)
+                ax[ind].plot(self.data['time'].data, data['truth'].data,'k-')
+                ax[ind].set_title(name)
+            
+        for ax in self.axes.ravel():
+            ax.grid()
+            ax.set_xlim(350,500)
+            ax.set_ylim(-1.5,1.5)
+        for ax in self.axes[:,0]:
+            ax.set_ylabel('x')
+        for ax in self.axes[:,1]:
+            ax.set_ylabel('y')
+        for ax in self.axes[-1,:]:
+            ax.set_xlabel('Time')
+        for ax in self.axes[:-1,:].ravel():
+            ax.xaxis.set_major_formatter(mpl.ticker.NullFormatter())
+        self.add_subplot_labels()
+        
+        cax = self.fig.add_axes((0.1,.97,.8,.02))
+        cbar = self.fig.colorbar(im, cax=cax, orientation='horizontal',
+                                 label='probability', 
+                                 ticks=np.arange(0,1.01,.2))
+        
+        
+    def _calculate_binning(self, data):
+        from scipy.stats import binned_statistic_2d as bin2d
+        
+        E = data['ensemble'].data
+        dt = data['time'].data[1]-data['time'].data[0]
+        time = data['time'].data[...,None] + np.zeros_like(E) 
+        binned = bin2d(time.ravel(), E.ravel(), 
+                       values=np.ones_like(time).ravel(),
+                       bins=(time[:,0]-.5*dt, np.linspace(-2,2,41))
+                       )
+        
+        return binned
+    
+    def _plot_binned(self, ax, binned):
+        x, y = binned[1:3]
+        x, y = np.meshgrid(x,y)
+        prob = binned[0] / np.sum(binned[0], axis=1, keepdims=True)
+        h = ax.pcolormesh(x, y, prob.T, cmap='afmhot_r',
+                          norm=mpl.colors.PowerNorm(.4,vmin=0,vmax=1))
+        return h
+
+class MoviePlots(BasePlots):
+
+    def __init__(self, fig_dir, data, experiments=None, obs_func=None):
+        super().__init__(fig_dir)
+        self.data = data 
+        self.experiments = experiments
+        self.obs_func = obs_func
+        
+    def plot_state(self, ax, data):
+        time = data['time']
+        name = data['experiment']
+        ax.clear()
+        
+        xx = np.array(data['truth'])
+        yy = np.array(data['obs'])
+        Efor  = np.squeeze(data['ensemble'].sel(stage='forecast').data)
+        Eana  = np.squeeze(data['ensemble'].sel(stage='analysis').data)
+        
+        xx = xx[None,...] if np.ndim(xx)==1 else xx 
+        Efor = Efor[None,...] if np.ndim(Efor)==2 else Efor 
+        Eana = Eana[None,...] if np.ndim(Eana)==2 else Eana
+        
+        #Plot circle 
+        radius = np.hypot(xx[0,0],xx[0,1])
+        theta = np.linspace(0, 2*np.pi, 100)
+        radius = np.ones_like(theta) * radius 
+        ax.plot(radius * np.cos(theta), radius * np.sin(theta), 'k-')
+        ax.plot(np.cos(theta), np.sin(theta), 'k-', alpha=.5)
+        
+        #Plot observation 
+        if self.obs_func is not None:
+            meshpoints = np.linspace(-2,2,200)
+            mesh = [(x0,y0,self.obs_func([x0,y0])) for x0 in meshpoints for y0 in meshpoints]
+            mesh = np.array(mesh).reshape((len(meshpoints),len(meshpoints),-1))
+            ax.contour(mesh[:,:,0], mesh[:,:,1], mesh[:,:,2], 
+                        levels=np.array([1])*yy[0], colors=['k'],
+                        linestyles=['--'])
+            
+        #Plot ensembles
+        ax.plot(Efor[0,:,0],Efor[0,:,1], 'b^', label='forecast', alpha=.2, markeredgewidth=0)
+        ax.plot(Eana[0,:,0],Eana[0,:,1], 'gv', label='analysis', alpha=.2, markeredgewidth=0)
+        hfor, = ax.plot(np.mean(Efor[0,:,0]),np.mean(Efor[0,:,1]), 'b^', label='forecast',
+                        markerfacecolor='none')
+        hana, = ax.plot(np.mean(Eana[0,:,0]),np.mean(Eana[0,:,1]), 'gv', label='analysis',
+                        markerfacecolor='none')
+        htruth, = ax.plot(xx[0,0],xx[0,1], 'ko', label='truth')
+        self.handles = [hfor, hana, htruth]
+        
+        #Set axes 
+        ax.set_title(str(data['experiment'].data))
+            
+    def plot_movie_frame(self, data):
+        if not hasattr(self, 'fig'):
+            nrow = int(np.ceil(len(self.experiments)/3))
+            ncol = int(np.ceil(len(self.experiments)/nrow))
+            self.fig = plt.figure(figsize=(ncol*3., nrow*3.5))
+            self.axes = self.fig.subplots(nrow,ncol)
+            self.axes = np.reshape(self.axes, (nrow,-1))
+            
+        for ax, xp_name in zip(self.axes.ravel(), self.experiments):
+            self.plot_state(ax, data.sel(experiment=xp_name))
+            
+        for ax in self.axes.ravel():
+            ax.grid()
+            ticks = self.nice_ticks((-2,2), max_ticks=5, symmetric=True)
+            ax.set_xlim(min(ticks), max(ticks))
+            ax.set_xticks(ticks)
+            ax.set_ylim(min(ticks), max(ticks))
+            ax.set_yticks(ticks)
+            ax.set_aspect(1)
+        for ax in self.axes[:,0]:
+            ax.set_ylabel('y')
+        for ax in self.axes[-1,:]:
+            ax.set_xlabel('x')
+        self.add_subplot_labels()
+        
+        lax = self.fig.add_axes((.1,.95,.8,.05))
+        lax.set_axis_off()
+        lax.legend(handles=self.handles, loc='upper center', ncol=3, framealpha=1)
+        
+    def plot_movie_frames(self, fig_name='movie'):        
+        for it,time in enumerate(self.data['time']):
+            data = self.data.sel(time=time)
+            self.fig_name = fig_name+f'/frame_{it:04d}'
+            self.plot_movie_frame(data)
+            print('SAVE ',self.fig_path)
+            self.save()
+            
+    def plot_movie(self, fig_name, fps):
+        
+        for it,time in enumerate(self.data['time']):
+            data = self.data.sel(time='time')
+            self.fig_name = fig_name+f'/frame_{it:04d}'
+            
+        movie_dir = os.path.dirname(self.fig_path)
+        movie_file = os.path.join(movie_dir,fig_name+'.mp4')
+        
+        print('Compiling figures into animation.')
+        fmt = os.path.join(movie_dir, 'frame_%04d'+'.png')
+        fmt = '\"'+fmt+'\"'
+        cmd = (f'ffmpeg -f image2 -r {fps} -i {fmt} -vcodec libx264 -y '
+               f'-profile:v high444 -refs 16 -crf 0 -preset ultrafast {movie_file}')
+        os.system(cmd)
 
 class ProbDensityPlots(BasePlots):
     """ Plot probability density as function of true value. """
@@ -1163,6 +1431,7 @@ class CrpsPlots(BasePlots):
             ax.set_xticklabels([])
             ax.set_xticks(range(len(xps)))
             ax.set_xlim(-.5, len(xps)-.5)
+            ax.set_ylim(0,.7)
             ax.grid()
         for ax in self.axes[-1]:
             ax.xaxis.set_tick_params(rotation=10)
@@ -1653,6 +1922,145 @@ class CirclePlot(BasePlots):
                    f'-profile:v high444 -refs 16 -crf 0 -preset ultrafast {file_path}')
             os.system(cmd)
             # shutil.rmtree(tmp_dir)
+            
+class SkewPlots(BasePlots):
+    
+    def __init__(self, fig_dir, skews, sig=0.1):
+        super().__init__(fig_dir)
+        self.sig = sig 
+        self.skews = skews
+        self.style = CompoundedStyles()
+    
+    def _create_distribution(self, skew):
+        delta = skew / np.sqrt(1+skew**2)
+        sdelta = np.sqrt(2/np.pi)*delta
+        m = sdelta - (1-np.pi/4)*sdelta**3/(1-sdelta**2)-np.sign(skew)/2*np.exp(-2*np.pi/np.abs(skew))
+    
+        scale = np.sqrt(self.sig**2 / (1-2/np.pi*delta**2))
+        loc = -scale*m
+        
+        return scipy.stats.skewnorm(skew, loc=loc, scale=scale)
+    
+    def plot(self, fig_name='skewnorm'):
+        self.fig_name = fig_name
+        self.fig = plt.figure(figsize=(4,3.5))
+        self.axes = self.fig.subplots(1,1)
+        self.fig.subplots_adjust(bottom=.18)
+        self.axes = np.reshape(self.axes, (1,1))
+        
+        errors = np.linspace(-.5,.5,100)
+        
+        ax = self.axes[0,0]
+        self.handles = []
+        for skew in self.skews:
+            label = r"$\lambda=$"+f"{skew:.1f}"
+            self.style.assign(label)
+            
+            distribution = self._create_distribution(skew)
+            density = distribution.pdf(errors)
+            handle,  = ax.plot(errors, density, color=self.style.color,
+                               linestyle=self.style.line,
+                               label=label)
+            self.handles.append(handle)
+            
+        for ax in self.axes.ravel():
+            ax.grid()
+        for ax in self.axes[-1,:]:
+            ax.set_xlabel('Observational error')
+        for ax in self.axes[:,0]:
+            ax.set_ylabel('Probability density')
+            ax.set_ylim(0,7)
+        self.axes[0,0].legend(handles=self.handles, loc='upper center',
+                              framealpha=1, ncol=2)
+        
+        if self.fig_name is not None:
+            self.save()
+
+class SeriesPlots(BasePlots):
+    
+    def __init__(self, parameter_name, fig_path):
+        super().__init__(fig_path)
+        self.parameter_name = parameter_name
+        self.datas = []
+        self.values = []
+        
+    def add_exp(self, data, value):
+        self.values.append(value)
+        self.datas.append(data)
+        
+    def plot(self, fig_name=None):
+        self.fig_name = fig_name if fig_name is not None else self.parameter_name+'_series'
+        
+        self.fig = plt.figure(figsize=(8,8))
+        self.axes = self.fig.subplots(2,2).reshape((2,2))
+        self.fig.subplots_adjust(top=.85)
+        
+        datas = []
+        for data, value in zip(self.datas, self.values):
+            data1 = self._extract_crps1(data, value)
+            datas.append(data1)
+        datas = xr.merge(datas)
+        datas = filter_data(datas)
+
+        variables = ['x','y','radius','angle']
+        experiments = datas['experiment'].data 
+        parameters = datas['parameter'].data
+        
+        max_confidence = -np.inf
+        for ax, variable in zip(self.axes.ravel(), variables):
+            self.handles = []
+            for experiment in experiments:
+                self.style.assign(experiment)
+                
+                crps = datas[variable].sel(experiment=experiment)
+                crps = crps.data.T
+                statistic = np.nanmean(crps, axis=0)
+                confidence = bootstrap((crps,), np.nanmean, vectorized=True,
+                                       confidence_level=CONFIDENCE_LEVEL)
+                
+                max_confidence = max(max_confidence, 
+                                     np.max(confidence.confidence_interval.high))
+                ax.fill_between(parameters, confidence.confidence_interval.low,
+                                confidence.confidence_interval.high,
+                                color=self.style.color, alpha=.3)
+                handle, = ax.plot(parameters, statistic, color=self.style.color,
+                                  label=experiment, linestyle=self.style.line)
+                self.handles.append(handle)
+        
+        for ax,variable in zip(self.axes.ravel(), variables):
+            ax.set_title(variable)
+            ax.grid()
+            yticks = self.nice_ticks((0,max_confidence))
+            xticks = self.nice_ticks(parameters, max_ticks=8)
+            ax.set_ylim((np.min(yticks),np.max(yticks)))
+            ax.set_xlim(np.min(xticks),np.max(xticks))
+            ax.set_xticks(xticks)
+            ax.set_yticks(yticks)
+        for ax in self.axes[:,0]:
+            ax.set_ylabel('CRPS')
+        for ax in self.axes[-1,:]:
+            ax.set_xlabel(self.parameter_name+' parameter')
+            
+        ax = self.axes[1,0]
+        
+        lax = self.fig.add_axes((.1,.9,.8,.1))
+        lax.set_axis_off()
+        lax.legend(handles=self.handles,loc='upper center',framealpha=1,ncol=2)
+        ax.set_ylim(0,.25)
+        
+        if self.fig_name is not None:
+            self.save()
+            
+    def _extract_crps1(self, data, value):  
+        data = data['crps']          
+        data = data.sel(variable='crps')
+        data = data.expand_dims({'parameter':1})
+        data = data.assign_coords({'parameter':('parameter',[value])})
+        data['angle'] = np.deg2rad(data['angle'])
+        return xr.Dataset(data)
+    
+
+
 
 # %% Needs revision
 
@@ -2771,6 +3179,8 @@ class DifferenceWeights(BasePlots):
         ax.set_ylabel('Rel. difference')
         ax.set_xlabel('Layer number')
         ax.legend(loc='upper left')
+
+
 
 # %% Axes
 
