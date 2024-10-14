@@ -19,7 +19,7 @@ xp_parameters = {}
 clima_parameters = {}
 
 exps = []
-for rotation_rate in [.01, .02, .04, .06, .08, .1, .12, .15, .2]:
+for rotation_rate in [.01, .02, .05, .1, .15, .2]:
     exp = DaExperiment(exp_name+"_rate{:02d}".format(int(rotation_rate*100)), 
                        Nruns=8, Nclima=8,
                        da_model=DapperModel(rotation_rate=rotation_rate),
