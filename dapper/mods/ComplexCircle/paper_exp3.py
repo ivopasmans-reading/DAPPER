@@ -51,7 +51,7 @@ def create_plots(exp):
     plotter.close()
     
 def plot_skew():
-    pl = SkewPlots(FIG_DIR, [0,-2,-4,-12])
+    pl = SkewPlots(FIG_DIR,[0,-12,-8,-4,-2,2,12])
     pl.plot()
 
 

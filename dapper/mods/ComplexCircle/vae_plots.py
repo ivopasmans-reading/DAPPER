@@ -83,7 +83,7 @@ def set_styles(plot):
 def filter_data(data):
     """ Remove certain seeds from data. """
     seeds = data.coords['seed']
-    seeds = [s for s in seeds if s < 1200 or s >= 1300]
+    seeds = [s for s in seeds if (1000<=s<1200 or 1300<s<=1800)]
     return data.sel(seed=seeds)
 
 #%% Default plot routines. 
@@ -123,7 +123,7 @@ def plot_exp(exp, exp_fig_dir):
         plotHist.save()
     
         #Shows the classical RMSE
-        plot_data = data['rmse']
+        plot_data = filter_data(data['rmse'])
         plotHist = TaylorPlots(exp_fig_dir, plot_data)
         plotHist.style = CompoundedStyles()
         plotHist = set_styles(plotHist)
@@ -511,7 +511,8 @@ class ConfidencePlots(BasePlots):
 
         mean, low, high = [], [], []
         for data1 in data:
-            confidence = bootstrap((data1,), np.mean, confidence_level=level)
+            confidence = bootstrap((data1,), np.mean, confidence_level=level,
+                                   n_resamples=BOOT_SAMPLES)
             low.append(confidence.confidence_interval.low)
             high.append(confidence.confidence_interval.high)
             mean.append(np.mean(data1))
@@ -1943,9 +1944,9 @@ class SkewPlots(BasePlots):
     
     def plot(self, fig_name='skewnorm'):
         self.fig_name = fig_name
-        self.fig = plt.figure(figsize=(4,3.5))
+        self.fig = plt.figure(figsize=(4,4.5))
         self.axes = self.fig.subplots(1,1)
-        self.fig.subplots_adjust(bottom=.18)
+        self.fig.subplots_adjust(bottom=.39,top=.98)
         self.axes = np.reshape(self.axes, (1,1))
         
         errors = np.linspace(-.5,.5,100)
@@ -1953,7 +1954,7 @@ class SkewPlots(BasePlots):
         ax = self.axes[0,0]
         self.handles = []
         for skew in self.skews:
-            label = r"$\lambda=$"+f"{skew:.1f}"
+            label = r"$\lambda=$"+f"{int(skew):d}"
             self.style.assign(label)
             
             distribution = self._create_distribution(skew)
@@ -1969,9 +1970,12 @@ class SkewPlots(BasePlots):
             ax.set_xlabel('Observational error')
         for ax in self.axes[:,0]:
             ax.set_ylabel('Probability density')
-            ax.set_ylim(0,7)
-        self.axes[0,0].legend(handles=self.handles, loc='upper center',
-                              framealpha=1, ncol=2)
+            ax.set_ylim(0,5)
+            
+        self.lax = self.fig.add_axes([.1,.0,.8,.2])
+        self.lax.set_axis_off()
+        self.lax.legend(handles=self.handles, loc='lower center',
+                        framealpha=1, ncol=2)
         
         if self.fig_name is not None:
             self.save()
@@ -2006,7 +2010,7 @@ class SeriesPlots(BasePlots):
         experiments = datas['experiment'].data 
         parameters = datas['parameter'].data
         
-        max_confidence = -np.inf
+        max_confidence = dict((var,-np.inf) for var in variables)
         for ax, variable in zip(self.axes.ravel(), variables):
             self.handles = []
             for experiment in experiments:
@@ -2016,10 +2020,11 @@ class SeriesPlots(BasePlots):
                 crps = crps.data.T
                 statistic = np.nanmean(crps, axis=0)
                 confidence = bootstrap((crps,), np.nanmean, vectorized=True,
-                                       confidence_level=CONFIDENCE_LEVEL)
+                                       confidence_level=CONFIDENCE_LEVEL,
+                                       n_resamples=BOOT_SAMPLES)
                 
-                max_confidence = max(max_confidence, 
-                                     np.max(confidence.confidence_interval.high))
+                max_confidence[variable] = max(max_confidence[variable], 
+                                               np.max(confidence.confidence_interval.high))
                 ax.fill_between(parameters, confidence.confidence_interval.low,
                                 confidence.confidence_interval.high,
                                 color=self.style.color, alpha=.3)
@@ -2030,11 +2035,17 @@ class SeriesPlots(BasePlots):
         for ax,variable in zip(self.axes.ravel(), variables):
             ax.set_title(variable)
             ax.grid()
-            yticks = self.nice_ticks((0,max_confidence))
+            yticks = self.nice_ticks((0,max_confidence[variable]))
             xticks = self.nice_ticks(parameters, max_ticks=8)
-            ax.set_ylim((np.min(yticks),np.max(yticks)))
-            ax.set_xlim(np.min(xticks),np.max(xticks))
+            
+            
             ax.set_xticks(xticks)
+            ax.set_yticks(yticks)
+            ax.set_ylim((np.min(yticks),np.max(yticks)))
+            ax.set_xlim(np.min(parameters),np.max(parameters))
+        for ax in self.axes[0,:]:
+            yticks = self.nice_ticks((0, max(max_confidence['x'], max_confidence['y'])))
+            ax.set_ylim((np.min(yticks), np.max(yticks)))
             ax.set_yticks(yticks)
         for ax in self.axes[:,0]:
             ax.set_ylabel('CRPS')
@@ -2046,7 +2057,8 @@ class SeriesPlots(BasePlots):
         lax = self.fig.add_axes((.1,.9,.8,.1))
         lax.set_axis_off()
         lax.legend(handles=self.handles,loc='upper center',framealpha=1,ncol=2)
-        ax.set_ylim(0,.25)
+        
+        self.add_subplot_labels()
         
         if self.fig_name is not None:
             self.save()
@@ -2075,7 +2087,7 @@ class EnsStatsPlots(BasePlots):
         self.xps = []
         self.labels = []
         self.truth = []
-        self.p_level = .9
+        self.p_level = CONFIDENCE_LEVEL
         self.best_calculated = False
 
     def rmse(self, a, **kwargs):
@@ -2537,14 +2549,16 @@ class EnsStatsPlots(BasePlots):
         def corr2rad(c): return .5*np.pi*(1-c)
 
         rmse = self.rmse(x1 - x2)
-        rmse_range = bootstrap((x1-x2,), self.rmse, method='percentile',
-                               confidence_level=self.p_level)
+        rmse_range = bootstrap((x1-x2,), self.rmse, 
+                               confidence_level=self.p_level, 
+                               n_resamples=BOOT_SAMPLES)
         rmse_range = np.array(rmse_range.confidence_interval).reshape((2, 1))
 
         corr = correlation(np.array([x1, x2]), axis=-1)
         corr_range = bootstrap((np.array([x1, x2]),), correlation,
-                               axis=-1, vectorized=True, method='percentile',
-                               confidence_level=self.p_level)
+                               axis=-1, vectorized=True, 
+                               confidence_level=self.p_level, 
+                               n_resamples=BOOT_SAMPLES)
         corr_range = np.array(corr_range.confidence_interval).reshape((2, 1))
 
         corr_range, corr = corr2rad(corr_range), corr2rad(corr)
@@ -2578,8 +2592,8 @@ class EnsStatsPlots(BasePlots):
             data_xp = np.array([data_xp])
             print(data_xp)
 
-            result = bootstrap(data_xp, self.rmse, n_resamples=1000, vectorized=True,
-                               axis=0, confidence_level=level, method='percentile')
+            result = bootstrap(data_xp, self.rmse, n_resamples=BOOT_SAMPLES, vectorized=True,
+                               axis=0, confidence_level=level)
             print('LOW', result.confidence_interval)
 
 

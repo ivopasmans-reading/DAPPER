@@ -23,10 +23,11 @@ clima_parameters = {}
 
 exps = []
 for skew in [-12,-8,-4,-2,-1,0,1,2,4,8,12]:
-    exp = DaExperiment(exp_name+"_{:+03d}".format(int(10*skew)), Nruns=8, Nclima=8,
+    exp = DaExperiment(exp_name+"_{:+04d}".format(int(10*skew)), Nruns=8, Nclima=8,
                        da_model=DapperModel(obs_type=('skewedNormal',skew)),
                        xp_parameters=xp_parameters, 
                        clima_parameters=clima_parameters)
+    exp.skew = skew
     exps.append(exp)
 
 def create_plots(exp):
@@ -61,12 +62,18 @@ def create_skew_plot(exps):
             data_for, data_ana = dill.load(stream)
             
         skew = int(re.match(pattern, exp.filepath)[1])/10.
+        print('SKEW',skew,exp.filepath)
         plot.add_exp(data_for, skew)
         
     plot = set_styles(plot)
     plot.plot()
+    
+    
 
-create_skew_plot(exps)
+# create_skew_plot(exps)
+# for exp in exps:
+#     if exp.skew == 0:
+#         create_plots(exp)
         
 
 #%%
@@ -74,7 +81,7 @@ create_skew_plot(exps)
 if __name__=='__main__':
     iexp = int(sys.argv[2])
     if iexp<len(exps):
-        #run_exp(exps[iexp])
+        run_exp(exps[iexp])
     
        
         

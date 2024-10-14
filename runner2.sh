@@ -2,7 +2,8 @@
 
 source "/home/ivo/Env/keras/bin/activate"
 export PYTHONPATH=$PYTHONPATH:"/home/ivo/Code/VAE/dapper/mods/ComplexCircle"
-MODELPATH="dapper/mods/ComplexCircle/"
+export MODELPATH="dapper/mods/ComplexCircle/"
+export CUDA_VISIBLE_DEVICES=""
 
 FILENAME=$1
 MAX_INDEX=$2
