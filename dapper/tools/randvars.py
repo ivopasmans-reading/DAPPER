@@ -245,29 +245,33 @@ class SkewedGaussRV(RV_with_mean_and_cov):
         #Parameters 
         self.skew = skew
         delta = self.skew / np.sqrt(1+self.skew**2)
+        sdelta = np.sqrt(2/np.pi)*delta
+        
+        if np.isclose(skew, 0) or np.isclose(sdelta**2,1):
+            m = 0 
+        else:
+            m = (sdelta - (1-np.pi/4)*sdelta**3/(1-sdelta**2) - 
+                 np.sign(skew)/2*np.exp(-2*np.pi/np.abs(skew)) )
         
         if 'scale' in kwargs:
             scale = kwargs['scale']
-            C = scale**2 * (1 - delta**2*2/np.pi)
+            C = scale**2 * (1 - sdelta**2)
         else:
             scale = np.sqrt(C / (1-delta**2*2/np.pi))
+            
+            scale = np.sqrt(C / (1-sdelta**2))
+            loc = -scale*m
            
         #Set loc such that output sample has zero mean. 
         if 'loc' in kwargs:
             loc = kwargs['loc']
-            mu = kwargs['loc'] + scale * delta * np.sqrt(2/np.pi)
+            mu  = loc + scale * sdelta
         elif 'mode' in kwargs:
-            pd = np.sqrt(2/np.pi) * delta 
-            if np.isclose(pd, 0.0):
-                mo = 0.0
-            else:
-                mo = pd - (1-np.pi/4)*pd**3/(1-pd**2)-np.sign(self.skew)/2*np.exp(-2*np.pi/np.abs(self.skew))
-            loc = kwargs['mode'] - scale * mo
-            mu = loc + scale * delta * np.sqrt(2/np.pi)
+            loc = kwargs['mode'] - scale * m  
+            mu  = loc + scale * sdelta
         else:
-            loc = mu - scale * delta * np.sqrt(2/np.pi)
-            
-        
+            loc = mu - scale * sdelta
+                    
         self.rv = stats.skewnorm(self.skew, loc=loc, scale=scale)
         
         #Number of observations
@@ -287,7 +291,7 @@ class SkewedGaussRV(RV_with_mean_and_cov):
         self.mu = np.ones((self.M,)) * mu 
             
     def _sample(self, N):
-        return self.rv.rvs((self.M,))
+        return self.rv.rvs((N,self.M))
     
     def sample(self, N):
         if self.C == 0:
