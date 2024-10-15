@@ -466,32 +466,40 @@ class InnoVaeTransform(VaeTransform):
         self.previous_M = 0
         
     def pre(self, state):
-        from matplotlib import pyplot as plt 
-
-        Y0 = state.Y+0
-        D0 = state.D+0
-        self.train(state.E, state.y)
+        D = self._create_artificial_innovations(state.E)
+        self.train(state.E, D)
             
         #Convert obs-control covariance in observation space. 
-        state.Y = state.y[None,...] - self.HMM.ObsNow(state.E)
-        _, _, state.Y = self.model.encoder.predict(state.Y)
-        state.Y = -state.Y - np.mean(-state.Y, axis=0, keepdims=True)
-        state.Y = np.array(state.Y)
+        Y = state.y[None,...] - self.HMM.ObsNow(state.E)
+        _, _, Y = self.model.encoder.predict(Y)
+        Y_mean = np.mean(Y, axis=0, keepdims=True)
+        state.Y = -np.array(Y-Y_mean)
             
         #Convert inno ensemble in state space to latent space. 
-        _, _, N = self.model.encoder.predict(state.D*0)
-        _, _, D = self.model.encoder.predict(state.D)
-        state.D = np.array(D - N)
+        _, _, state.D = self.model.encoder.predict(D)
+        state.D = state.D - np.mean(state.D, keepdims=True, axis=0) + Y_mean
         
         return state
     
-    def post(self, state):
-        #_, _, _, _, D = self.model.decoder.predict(D)
-                
+    def post(self, state): 
         return state
         
-    def train(self, E, y):
+    def _create_artificial_innovations(self, E):
+        #Sample artificial truths 
+        ind = np.random.randint(0, np.size(E,0), size=(self.N,))
+        Etrue  = np.take(E, ind, axis=0)
+        ytrue  = self.HMM.ObsNow(Etrue) 
+        yerror = self.error_sample(ytrue) - ytrue
         
+        #Create artificial member errors
+        ind    = np.random.randint(0, np.size(E,0), size=(self.N,))
+        M      = np.take(E, ind, axis=0)
+        merror = self.HMM.ObsNow(M) - ytrue
+        
+        #artificial innovations = observational error - member error
+        return yerror - merror / np.sqrt(2.)
+        
+    def train(self, E, D):
         #Number of observations
         M = self.HMM.ObsNow.M
         
@@ -517,21 +525,8 @@ class InnoVaeTransform(VaeTransform):
                 ref_layer = ref.get_layer(name) 
                 inno_layer.set_weights(ref_layer.get_weights())
                 
-        #copy_matched(self.ref_model.encoder, self.model.encoder)
+        copy_matched(self.ref_model.encoder, self.model.encoder)
         copy_matched(self.ref_model.decoder, self.model.decoder)
-        
-        #Create pseudo innovations 
-        
-        ind = np.random.randint(0, np.size(E,0), size=(self.N,))
-        E0  = np.take(E, ind, axis=0)
-        D0  = y[None,...] * np.ones((self.N,1))
-        
-        ind = np.random.randint(0, np.size(E,0), size=(self.N,))
-        E1  = np.take(E, ind, axis=0)
-        D1  = self.HMM.ObsNow(E1)
-        
-        #Create innovations 
-        D   = self.error_sample(D0) - D1
         
         #Rescale 
         layer = self.model.encoder.get_layer('z_mean_rescale')
@@ -587,8 +582,8 @@ class EtkfD(Assimilator):
                                / (self.N-1))
         
         #Correction to mean. 
-        Kd = A@state.Y.T@np.linalg.pinv(C)@np.mean(state.D, axis=1, 
-                                                   keepdims=True)/(self.N-1)
+        d_mean = np.mean(state.D, axis=1, keepdims=True)
+        Kd = A@state.Y.T@np.linalg.pinv(C)@d_mean/(self.N-1)
         #Correction to ensemble perturburbations.
         A = A@Q@np.diag(np.sqrt(L))@Qt
         
