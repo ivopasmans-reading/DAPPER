@@ -83,7 +83,7 @@ class CoderBuilder(ABC):
     def build_stopper(self, **kwargs):
         """ Build stopper for VAE training. """ 
         stopper_options = {'monitor':'loss','patience':5, 'verbose':False,
-                           'restore_best_weights':False, 'min_delta':0.01,
+                           'restore_best_weights':True, 'min_delta':0.01,
                            'start_from_epoch':20, 'mode':'min'}
         stopper_options = {**stopper_options, **kwargs}
         
@@ -314,8 +314,8 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_decoder(self.hp)
             self.builder.build_alpha(lambda epoch : keras.ops.convert_to_tensor(0.0))
             #self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.1*epoch))
-            self.builder.build_stopper(monitor='kl_loss', min_delta=.01)
-            self.builder.build_lr(min_delta=.1)
+            self.builder.build_stopper()
+            self.builder.build_lr()
             self.builder.build_model(self.hp)
         elif self.hp.get('architecture')=='inno':
             self.builder.reset()
@@ -323,8 +323,8 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_encoder(self.hp)
             self.builder.build_decoder(self.hp)
             self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.1*epoch))
-            self.builder.build_stopper(monitor='kl_loss', min_delta=.01)
-            self.builder.build_lr(min_delta=.1)
+            self.builder.build_stopper(min_delta=.005)
+            self.builder.build_lr(min_delta=.05, min_lr=5e-7)
             self.builder.build_model(self.hp)
             
         model = self.builder.model 

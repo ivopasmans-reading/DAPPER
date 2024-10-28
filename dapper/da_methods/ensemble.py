@@ -131,17 +131,16 @@ class StochasticInno(Inno):
         obs = self.HMM.ObsNow
         #Deviations
         Eo = obs(state.E[:self.N])
-        Eo = obs.noise.add_sample(Eo)
         #If number of innovations is larger than ensemble members,
         #bootstrap. 
         if self.N > np.size(state.E,0):
             Eo = Eo[np.random.randint(0, len(Eo), size=(self.N,))]
-        #Calculate innovations.
-        state.D = state.y[None,...] - Eo     
-        state.D = np.array(state.D)
+        #Add observational errors 
+        y = obs.noise.add_sample(state.y[None,...] * np.ones_like(Eo))
         
-        #Save innovation vectors. 
-        self.D = state.D
+        #Calculate innovations.
+        state.D = y - Eo     
+        state.D = np.array(state.D)
         
         return state
 
@@ -466,16 +465,17 @@ class InnoVaeTransform(VaeTransform):
         self.previous_M = 0
         
     def pre(self, state):
-        D = self._create_artificial_innovations(state.E)
+        D = self._create_training(state.E)
         self.train(state.E, D)
             
         #Convert obs-control covariance in observation space. 
         Y = state.y[None,...] - self.HMM.ObsNow(state.E)
         _, _, Y = self.model.encoder.predict(Y)
         Y_mean = np.mean(Y, axis=0, keepdims=True)
-        state.Y = -np.array(Y-Y_mean)
-            
+        state.Y = -np.array(Y-np.mean(Y,axis=0,keepdims=True))
+        
         #Convert inno ensemble in state space to latent space. 
+        D = self._create_artificial_innovations(state.E, state.y)
         _, _, state.D = self.model.encoder.predict(D)
         state.D = state.D - np.mean(state.D, keepdims=True, axis=0) + Y_mean
         
@@ -483,21 +483,29 @@ class InnoVaeTransform(VaeTransform):
     
     def post(self, state): 
         return state
-        
-    def _create_artificial_innovations(self, E):
+    
+    def _create_training(self, E):
         #Sample artificial truths 
         ind = np.random.randint(0, np.size(E,0), size=(self.N,))
-        Etrue  = np.take(E, ind, axis=0)
-        ytrue  = self.HMM.ObsNow(Etrue) 
-        yerror = self.error_sample(ytrue) - ytrue
+        y   = self.HMM.ObsNow(np.take(E, ind, axis=0)) 
+        y   = self.HMM.ObsNow.noise.add_sample(y)
         
-        #Create artificial member errors
-        ind    = np.random.randint(0, np.size(E,0), size=(self.N,))
-        M      = np.take(E, ind, axis=0)
-        merror = self.HMM.ObsNow(M) - ytrue
+        ind1 = np.random.randint(0, np.size(E,0), size=(self.N,))
+        e1   = self.HMM.ObsNow(np.take(E, ind1, axis=0)) 
         
         #artificial innovations = observational error - member error
-        return yerror - merror / np.sqrt(2.)
+        return y - e1
+        
+    def _create_artificial_innovations(self, E, y):
+        ind1   = np.random.randint(0, np.size(E,0), size=(self.N,))
+        e1     = self.HMM.ObsNow(np.take(E, ind1, axis=0)) 
+        
+        #Sample artificial truths 
+        y = y[None,...] + np.zeros_like(e1)
+        y = self.HMM.ObsNow.noise.add_sample(y)
+        
+        #artificial innovations = observational error - member error
+        return (y - e1)
         
     def train(self, E, D):
         #Number of observations
@@ -525,7 +533,7 @@ class InnoVaeTransform(VaeTransform):
                 ref_layer = ref.get_layer(name) 
                 inno_layer.set_weights(ref_layer.get_weights())
                 
-        copy_matched(self.ref_model.encoder, self.model.encoder)
+        #copy_matched(self.ref_model.encoder, self.model.encoder)
         copy_matched(self.ref_model.decoder, self.model.decoder)
         
         #Rescale 
@@ -567,23 +575,28 @@ class EtkfD(Assimilator):
     """
         
     def assimilate(self, state):
+        import matplotlib.pyplot as plt 
+        from scipy.stats import norm
+        
         #Calculate ensemble perturbations. 
         A, Emu = center(state.E)
         
-        #Reshape input. Each ensemble member is a column. 
+        #Reshape input. Each ensemble member is Fa column. 
         state.Y, state.D = state.Y.T, state.D.T
         A = A.T
         
+        #IP self._plot(state.D)
+        
         #Covariance of innovations R+HBH
         C = np.cov(state.D, rowvar=True, ddof=1)
-        if np.ndim(C)==0:
-            C = np.reshape(C,(1,1))
-        Q,L,Qt = np.linalg.svd(np.eye(self.N)-state.Y.T@np.linalg.pinv(C)@state.Y 
-                               / (self.N-1))
+        C = np.reshape(C, (1,1)) if np.ndim(C)==0 else C   
+        
+        NPa = np.eye(self.N)-state.Y.T@np.linalg.pinv(C)@state.Y * (self.N-1)**-1
+        Q,L,Qt = np.linalg.svd(NPa)
         
         #Correction to mean. 
         d_mean = np.mean(state.D, axis=1, keepdims=True)
-        Kd = A@state.Y.T@np.linalg.pinv(C)@d_mean/(self.N-1)
+        Kd = A@state.Y.T@np.linalg.pinv(C)@d_mean * (self.N-1)**-1
         #Correction to ensemble perturburbations.
         A = A@Q@np.diag(np.sqrt(L))@Qt
         
@@ -591,6 +604,18 @@ class EtkfD(Assimilator):
         state.E = Emu[None,...] + A.T + Kd.T
         
         return state
+    
+    def _plot(self, D):
+        from scipy.stats import gaussian_kde, norm 
+        from matplotlib import pyplot as plt
+        
+        Pnorm = norm(loc=np.mean(D), scale=np.std(D))
+        Psample = gaussian_kde(D[0], bw_method=.02)
+        
+        x = np.linspace(-3,3,300)
+        plt.plot(x,Pnorm.pdf(x),'-')
+        plt.plot(x,Psample.pdf(x),'--')
+        
     
 class PertObs(Assimilator):
     """

@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from scipy import stats
 from dapper.mods import ComplexCircle as circle
 from scipy.stats import norm, bootstrap, poisson
-import os
+import os, re, csv
 import shutil
 import scipy
 import xarray as xr
@@ -86,6 +86,158 @@ def filter_data(data):
     seeds = [s for s in seeds if (1000<=s<1200 or 1300<s<=1800)]
     return data.sel(seed=seeds)
 
+#%% Calculate statistics from 
+
+class PrintOutput:
+    
+    def __init__(self, filedir):
+        self.filedir = filedir
+        self.functions = [lambda e0,e1: complex(1,0)*e0 + complex(0,1)*e1,
+                          lambda e0,e1: e0,
+                          lambda e0,e1: e1,
+                          lambda e0,e1: np.hypot(e0,e1),
+                          lambda e0,e1: np.rad2deg(np.arctan2(e1,e0))]        
+        
+    def filelist(self):
+        pattern = re.compile("([0-9]+)_([0-9]+)_output.nc")
+        filepaths = []
+        for root, dirs, files in os.walk(self.filedir):
+            filepaths += [os.path.join(root,file) for file in files if 
+                          re.match(pattern,file) is not None]
+        return filepaths        
+    
+    def open(self):
+        self.data = xr.open_mfdataset(self.filelist())
+        self.experiment = np.array(self.data['experiment'], dtype=str)
+        
+    def _bootstrap(self, datas):
+        datas = tuple([np.array(data.data).ravel() for data in datas])
+        
+        def _calculate_means(*args, axis):
+            return np.array([np.mean(arg, axis=axis) for arg in args])
+        
+        conf = bootstrap(datas, _calculate_means, axis=0, 
+                         confidence_level=CONFIDENCE_LEVEL,
+                         n_resamples=BOOT_SAMPLES, paired=True,
+                         vectorized=True)
+        interval = conf.confidence_interval
+        means = _calculate_means(*datas, axis=0)
+
+        return means, interval.low, interval.high
+        
+    def calculate_bias(self, function, data):
+        e0 = data['ensemble'].mean(dim='member').sel(state_dim=[0])
+        e1 = data['ensemble'].mean(dim='member').sel(state_dim=[1])
+        t0 = data['truth'].sel(state_dim=[0])
+        t1 = data['truth'].sel(state_dim=[1])
+            
+        bias = function(e0,e1) - function(t0,t1)
+        bias = bias.mean(dim=['time'])
+        
+        return self._bootstrap((np.real(bias),np.imag(bias)))
+    
+    def calculate_rmse(self, function, data):
+        e0 = data['ensemble'].mean(dim='member').sel(state_dim=[0])
+        e1 = data['ensemble'].mean(dim='member').sel(state_dim=[1])
+        t0 = data['truth'].sel(state_dim=[0])
+        t1 = data['truth'].sel(state_dim=[1])
+            
+        error = function(e0,e1) - function(t0,t1) 
+        mse  = (error*error.conj()).mean(dim=['time'])
+        mse  = np.real(mse)
+        
+        mse  = self._bootstrap((mse,))
+        rmse  = tuple([e**.5 for e in mse])
+        
+        return rmse
+    
+    def calculate_ens_std(self, function, data):
+        e0 = data['ensemble'].sel(state_dim=[0])
+        e1 = data['ensemble'].sel(state_dim=[1])
+        
+        values = function(e0, e1)
+        variance = values.var(dim=['member'], ddof=1)
+        variance = variance.mean(dim=['time'])
+        variance = self._bootstrap((variance,))
+        return tuple([v**.5 for v in variance])
+    
+    def calculate_latent_ens_std(self, function, data):
+        e0 = data['latent_ensemble'].sel(latent_dim=[0])
+
+        variance = e0.var(dim=['member'], ddof=1)
+        variance = variance.mean(dim=['time'])
+        variance = self._bootstrap((variance,))
+        return tuple([v**.5 for v in variance])
+    
+    def calculate_corr(self, function, data):
+        e0 = data['ensemble'].mean(dim='member').sel(state_dim=[0])
+        e1 = data['ensemble'].mean(dim='member').sel(state_dim=[1])
+        t0 = data['truth'].sel(state_dim=[0])
+        t1 = data['truth'].sel(state_dim=[1])
+        
+        e = function(e0,e1)
+        t = function(t0,t1)
+        
+        corr = xr.corr(e,t,dim=['time'])
+        corr_abs, corr_angle = np.abs(corr), np.rad2deg(np.angle(corr))
+        return self._bootstrap((corr_abs, corr_angle))
+    
+    def calculate_r2(self, function, data):
+        e0 = data['ensemble'].mean(dim='member').sel(state_dim=[0])
+        e1 = data['ensemble'].mean(dim='member').sel(state_dim=[1])
+        t0 = data['truth'].sel(state_dim=[0])
+        t1 = data['truth'].sel(state_dim=[1])
+        
+        e = function(e0,e1)
+        t = function(t0,t1)
+        
+        res = np.abs(e-t)
+        anomaly = np.abs(t-t.mean(dim=['time']))
+        
+        r2 = 1 - (res**2).sum(dim='time')/(anomaly**2).sum(dim='time')
+        return self._bootstrap((r2,))
+    
+    def print(self, filepath, stage):
+        self.open()
+        experiments = np.array(self.data['experiment'], dtype=str)
+        values = dict([(experiment,[]) for experiment in experiments])
+        metrics = [self.calculate_bias, self.calculate_rmse, 
+                   self.calculate_ens_std,
+                   self.calculate_corr,
+                   self.calculate_r2,
+                   self.calculate_latent_ens_std]
+        multipliers = [1e2,1e1,1e1,1.,1.,1.]
+        formats = ["${:.1f},{:.1f}$", "${:.1f}$", "${:.1f}$", 
+                   "${:.2f},{:.1f}$", "${:.2f}$", "${:.2f}$"]
+        
+        
+        for experiment in experiments:
+            print('Experiment ',experiment, stage)
+            data = self.data.sel(experiment=experiment, stage=stage)
+            data = filter_data(data)
+            
+            for metric in metrics:
+                value, low, high = metric(self.functions[0], data)
+                values[experiment].append((value,low,high))
+           
+        with open(filepath,'w+') as stream:
+            writer = csv.writer(stream, delimiter='&')
+            writer.writerow(multipliers)
+            
+            for experiment in experiments:
+                line  = [experiment]
+                line += [self._format_metric(value, fmt, multiplier) for 
+                         value, fmt, multiplier in 
+                        zip(values[experiment],formats,multipliers)]
+
+                writer.writerow(line)
+                
+    def _format_metric(self, values, fmt, multiplier):
+        line  = fmt.format(*values[0]*multiplier)
+        line += " ("+fmt.format(*values[1]*multiplier)+"/"
+        line += fmt.format(*values[2]*multiplier)+")"
+        return line
+
 #%% Default plot routines. 
 
 def plot_exp(exp, exp_fig_dir):
@@ -130,11 +282,6 @@ def plot_exp(exp, exp_fig_dir):
         plotHist.calculate_stats_mean()
         plotHist.plot_taylor('taylor_'+stage)
         plotHist.save()
-        
-
-        
-
-
 
 # %% Abstract classes for plotting.
 
@@ -485,7 +632,7 @@ class BasePlots:
             
     def add_subplot_labels(self):
         for n, ax in enumerate(self.axes.ravel()):
-            ax.annotate(chr(97+n)+')', (-.05,1.05), xycoords='axes fraction',
+            ax.annotate(chr(97+n)+')', (0.,1.03), xycoords='axes fraction',
                         horizontalalignment='right',
                         verticalalignment='bottom')
             
@@ -2018,6 +2165,9 @@ class SeriesPlots(BasePlots):
                 
                 crps = datas[variable].sel(experiment=experiment)
                 crps = crps.data.T
+                if np.any(np.isnan(crps)):
+                    continue
+                
                 statistic = np.nanmean(crps, axis=0)
                 confidence = bootstrap((crps,), np.nanmean, vectorized=True,
                                        confidence_level=CONFIDENCE_LEVEL,
@@ -2050,7 +2200,7 @@ class SeriesPlots(BasePlots):
         for ax in self.axes[:,0]:
             ax.set_ylabel('CRPS')
         for ax in self.axes[-1,:]:
-            ax.set_xlabel(self.parameter_name+' parameter')
+            ax.set_xlabel(self.parameter_name)
             
         ax = self.axes[1,0]
         

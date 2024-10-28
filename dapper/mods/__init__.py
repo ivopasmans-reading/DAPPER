@@ -190,7 +190,6 @@ class TimeDependentOperator:
         except AttributeError:
             return self.Op1
 
-
 class Operator(struct_tools.NicePrint):
     """Container for the dynamical and the observational maps.
 
@@ -214,9 +213,14 @@ class Operator(struct_tools.NicePrint):
         if model is None:
             model = Id_op()
             kwargs['linear'] = lambda *args: np.eye(M)
+            
         # Assign
         self.model = model
-
+        
+        #Linearize
+        if 'linear' not in kwargs:
+            kwargs['linear'] = self._model2jacobian(self.model)
+        
         # None/0 => No noise
         if isinstance(noise, RV):
             self.noise = noise
@@ -234,5 +238,16 @@ class Operator(struct_tools.NicePrint):
 
     def __call__(self, *args, **kwargs):
         return self.model(*args, **kwargs)
-
+    
+    def _model2jacobian(self, model):
+        def jacobian(e):
+            M  = np.size(e,-1)
+            I  = max(1e-6, 1e-6 * np.linalg.norm(e)) * np.eye(M)
+            e0 = model(e)
+            J  = np.array([model(e+de) for de in I])
+            J -= e0.reshape((1,-1))
+            J /= I[0,0]
+            return J.T
+        return jacobian
+        
     printopts = {'ordering': ['M', 'model', 'noise'], "indent": 4}

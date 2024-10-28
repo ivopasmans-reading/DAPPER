@@ -170,7 +170,7 @@ def depreciated_create_obs_factory(ind, sig, distribution):
     
     return create_obs
 
-def create_obs_factory(func, sig, distribution=('normal',)):  
+def create_obs_factory(func, sig, distribution=('normal',), jacobian=None):  
     """ 
     Create observation operator including observational error 
     probability distribution. 
@@ -188,6 +188,11 @@ def create_obs_factory(func, sig, distribution=('normal',)):
         def sample(E):
             if np.ndim(E)==1:
                 return np.reshape(func(E), (M,))
+            elif jacobian is not None:
+                e0 = np.mean(E,0)
+                T0 = func(e0)
+                T1 = jacobian(e0) @ np.array(E-e0[None,...]).T                
+                return np.reshape(T0[None,...]+T1.T, (-1,M))
             else:
                 return np.reshape([func(e) for e in E], (-1,M))
             
@@ -202,8 +207,7 @@ def create_obs_factory(func, sig, distribution=('normal',)):
         else:
             raise Exception(f"distribution {distribution} is unknown")
         
-        Obs = {'M':M, 'model':sample, 'linear':sample,
-               'noise':noise}
+        Obs = {'M':M, 'model':sample, 'linear':jacobian, 'noise':noise}
     
         return modelling.Operator(**Obs)
     

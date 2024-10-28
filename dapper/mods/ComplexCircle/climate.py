@@ -13,7 +13,6 @@ import os
 import dill
 import dataclasses
 import random
-import shutil
 from typing import Callable
 import xarray as xr
 import numpy as np
@@ -85,6 +84,7 @@ def compare_layers(m0, m1):
 class DapperModel:
     """ Class representing a model in DAPPER. """
     obs_func : Callable[[float], float] = lambda e: e[0]
+    obs_Dfunc : Callable[[float,float], float] = None
     obs_type : tuple = ('normal',)
     obs_sig : float = 0.1
     amplitude : float = 0.0
@@ -94,14 +94,14 @@ class DapperModel:
         """ Run the DAPPER model and create truth and observations. """
 
         # DAPPER dynamic model object.
-        Dyn = {'M': 2, 'model': circle.step_factory(amplitude=self.amplitude, 
-                                                    rotation_rate=self.rotation_rate),
-               'linear': circle.step_factory(amplitude=self.amplitude,
-                                             rotation_rate=self.rotation_rate), 'noise': 0}
+        Dyn = {'M': 2, 'noise':0,
+               'model': circle.step_factory(amplitude=self.amplitude, 
+                                            rotation_rate=self.rotation_rate)}
 
         # DAPPER observation operator.
         obs = circle.create_obs_factory(self.obs_func, self.obs_sig,
-                                        distribution=self.obs_type)
+                                        distribution = self.obs_type,
+                                        jacobian = self.obs_Dfunc)
         Obs = {'time_dependent': obs}
 
         # Time steps model.
@@ -163,8 +163,8 @@ class VaeExperiment:
             # Check for which combinations (experiment,seed) all values are non-nan
             isnull = self.data_ana['rmse']['x'].isnull()
             coords = set(isnull.coords) - set(['seed', 'experiment'])
-            isnull = isnull.reduce(
-                lambda x, axis: np.any(x, axis=axis), dim=coords)
+            isnull = isnull.reduce(lambda x, axis: np.any(x, axis=axis), 
+                                   dim=coords)
             self.done = [(xp, seed) for xp in list(isnull['experiment'].data)
                          for seed in list(isnull['seed'].data)
                          if not isnull.sel(experiment=xp, seed=seed)]
@@ -314,7 +314,7 @@ class XpsClass:
     clima: ClimaExperiment
     HMM: modelling.HiddenMarkovModel
     Nens: int = 64
-    No: int = 256
+    No: int = 384
     names: list = dataclasses.field(default_factory=lambda : XP_NAMES)
     factory: eda.EndaFactory = dataclasses.field(default_factory=lambda: eda.EndaFactory())
 
@@ -336,12 +336,14 @@ class XpsClass:
             return StopIteration
         elif 'no DA' in name:
             xp = eda.EnDa(self.Nens, [], name='no DA')
+        elif 'ETKFD' in name:
+            xp = self.factory.build(self.Nens, 'etkf_d', name=name, 
+                                    rot=False, No=self.No)
         elif 'ETKF0' in name:
             xp = eda.EnKF('Sqrt', self.Nens)
             xp.name = name
         elif 'ETKF' in name:
-            xp = self.factory.build(
-                self.Nens, 'Sqrt svd', name=name, rot=False)
+            xp = self.factory.build(self.Nens, 'Sqrt svd', name=name, rot=False)
         elif 'single-transfer' in name:
             bkg_trans = eda.BackgroundVaeTransform(self.hypermodel, self.hp,
                                                    self.model)
@@ -434,7 +436,7 @@ class DaExperiment(VaeExperiment):
         except:
             raise RuntimeError((f"Experiment {xp.name} seed {seed} "
                                 "failed to complete."))
-
+        
         # Calculate CRPS and save in Xarray.
         for key, value in self.metrics.items():
             stat = plots.calculate_stat(value, xp=xp, xx=xx, seed=seed,
