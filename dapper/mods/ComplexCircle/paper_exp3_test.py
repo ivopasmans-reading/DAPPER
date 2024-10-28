@@ -17,13 +17,14 @@ import xarray as xr
 import numpy as np
 
 #Create the settings for the experiment
-exp_name = "paper_exp3_test"
-xp_parameters = {'names':['no DA','ETKF','single-clima','double-clima'],
-                 'No':64*8}
+exp_name = "paper_exp3_S"
+xp_parameters = {'names':['no DA','ETKF','single-clima','double-clima']}
 clima_parameters = {}
 
 exps = []
-for skew in [-12,-8,-4,-2,-1,0,1,2,4,8,12]:
+#for skew in [-12,-8,-4,-2,-1,0,1,2,4,8,12]:
+for skew in [-12,0]:
+    #for skew in [0,-8]:
     exp = DaExperiment(exp_name+"_{:+04d}".format(int(10*skew)), Nruns=8, Nclima=8,
                        da_model=DapperModel(obs_type=('skewedNormal',skew)),
                        xp_parameters=xp_parameters, 
@@ -52,8 +53,6 @@ def create_plots(exp):
     plotter.save()
     
     plotter.close()
-        
-            
 
 def create_skew_plot(exps):
     plot = SeriesPlots('skew',FIG_DIR)
@@ -78,6 +77,9 @@ def create_skew_plot(exps):
         
 
 #%%
+
+# for exp in exps:
+#     run_exp(exp)
 
 if __name__=='__main__':
     iexp = int(sys.argv[2])

@@ -26,6 +26,8 @@ exp = DaExperiment(exp_name, Nruns=8, Nclima=8,
                    xp_parameters=xp_parameters, 
                    clima_parameters=clima_parameters)
 
+for power in [1, 1.2, 1.4, ]
+
 def create_plots(exp):
     """ Plot the experiment. """
     exp.load()
