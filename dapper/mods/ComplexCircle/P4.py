@@ -120,9 +120,9 @@ def create_nl_plot(exps):
     
     return datas
 
-#datas=create_nl_plot(exps[6:])
-import netCDF4 as nc 
-output = nc.Dataset('/home/ivo/dpr_data/vae/circle/P4_nl100/1000_1000_output.nc')
+if __name__!='__main__':
+    create_nl_plot(exps[6:])
+    create_plots(exps[-1])
    
 #%% 
 

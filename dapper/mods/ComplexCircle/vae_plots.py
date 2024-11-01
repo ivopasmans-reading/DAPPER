@@ -1071,6 +1071,9 @@ class EnsError:
     
 def calculate_output(xp):
     datas = []
+    array = xr.DataArray([0,1,2,3],name='test')
+    datas.append(array)
+    
     datas.append(xr.DataArray(np.array(xp.stats.xx)[xp.HMM.tseq.tto], 
                               dims=('time','state_dim'),
                               coords={'time':('time',xp.HMM.tseq.tto)},
@@ -1095,6 +1098,20 @@ def calculate_output(xp):
                                   coords={'stage':('stage',['forecast','analysis']),
                                           'time':('time',xp.HMM.tseq.tto)},
                                   name='latent_ensemble'))
+        datas.append(xr.DataArray(np.array(xp.stats.Elatent['t']),
+                                  dims=('time','latent_dim'), 
+                                  coords={'time':('time',xp.HMM.tseq.tto)},
+                                  name='latent_truth'))
+        
+    if hasattr(xp.stats,'Einno'):
+        datas.append(xr.DataArray(np.array(xp.stats.Einno['D']),
+                                  dims=('time','membero','inno_dim'), 
+                                  coords={'time':('time',xp.HMM.tseq.tto)},
+                                  name='inno_ensemble'))
+        datas.append(xr.DataArray(np.array(xp.stats.Einno['Y']),
+                                  dims=('time','member','inno_dim'), 
+                                  coords={'time':('time',xp.HMM.tseq.tto)},
+                                  name='inno_cross'))
         
     for n,data in enumerate(datas):
         datas[n] = datas[n].expand_dims({'experiment':1,'seed':1})

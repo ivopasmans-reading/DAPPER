@@ -328,7 +328,7 @@ class VaeTransform(EnProcessor):
     def pre(self, state): 
         self.train(state.E, state.D)
         
-        #Convert background ensemble in state space to latent space. 
+        #Convert background ensemble in state space to latent space.        
         _, _, state.E = self.model.encoder.predict(state.E, 
                                                    verbose=self.hp.get('verbose')) 
         x_latent, _, _ = self.model.encoder.predict(state.x[None,:], 
@@ -367,7 +367,6 @@ class VaeTransform(EnProcessor):
         
     def train(self, E, D):
         pass
-    
     
 class CyclingVaeTransform(VaeTransform):
     """ 
@@ -470,6 +469,7 @@ class InnoVaeTransform(VaeTransform):
             
         #Convert obs-control covariance in observation space. 
         Y = state.y[None,...] - self.HMM.ObsNow(state.E)
+        
         _, _, Y = self.model.encoder.predict(Y)
         Y_mean = np.mean(Y, axis=0, keepdims=True)
         state.Y = -np.array(Y-np.mean(Y,axis=0,keepdims=True))
@@ -478,7 +478,7 @@ class InnoVaeTransform(VaeTransform):
         D = self._create_artificial_innovations(state.E, state.y)
         _, _, state.D = self.model.encoder.predict(D)
         state.D = state.D - np.mean(state.D, keepdims=True, axis=0) + Y_mean
-        
+                
         return state
     
     def post(self, state): 
@@ -585,8 +585,6 @@ class EtkfD(Assimilator):
         state.Y, state.D = state.Y.T, state.D.T
         A = A.T
         
-        #IP self._plot(state.D)
-        
         #Covariance of innovations R+HBH
         C = np.cov(state.D, rowvar=True, ddof=1)
         C = np.reshape(C, (1,1)) if np.ndim(C)==0 else C   
@@ -596,7 +594,8 @@ class EtkfD(Assimilator):
         
         #Correction to mean. 
         d_mean = np.mean(state.D, axis=1, keepdims=True)
-        Kd = A@state.Y.T@np.linalg.pinv(C)@d_mean * (self.N-1)**-1
+        YCd = state.Y.T@np.linalg.pinv(C)@d_mean * (self.N-1)**-.5
+        Kd = A@YCd * (self.N-1)**-.5
         #Correction to ensemble perturburbations.
         A = A@Q@np.diag(np.sqrt(L))@Qt
         

@@ -8,11 +8,11 @@ Code for experiment 4: non-linear observation operator.
 @author: ivo
 """
 
-from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
-from vae_plots import plot_exp, MoviePlots, TimePlots, SeriesPlots, set_styles 
+import xarray as xr
 import os, sys, re, dill
 import numpy as np
-import xarray as xr
+from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
+from vae_plots import plot_exp, MoviePlots, TimePlots, SeriesPlots, set_styles 
 
 def obs_factory(alpha):
     """Nonlinear function."""
@@ -44,15 +44,15 @@ def obs_factory(alpha):
     return obs_func, obs_Dfunc
 
 #Create the settings for the experiment
-exp_name = "P4test"
+exp_name = "P4T"
 clima_parameters = {}
 exps = []
     
-xp_parameters = {'names':['ETKF','single-clima']}
+xp_parameters = {'names':['ETKF','double-transfer']}
 for nl_parameter in [1.]:
     obs_func, obs_Dfunc = obs_factory(nl_parameter) 
-    exp = DaExperiment(exp_name,
-                       Nruns=8, Nclima=8,
+    exp = DaExperiment(exp_name,run_time=20,
+                       Nruns=2, Nclima=1,
                        da_model=DapperModel(obs_func=obs_func),
                        xp_parameters=xp_parameters,
                        clima_parameters=clima_parameters)
@@ -98,14 +98,50 @@ def create_nl_plot(exps):
     
     return datas
 
-#datas=create_nl_plot(exps[6:])
-import netCDF4 as nc 
-output = nc.Dataset('/home/ivo/dpr_data/vae/circle/P4_nl100/1000_1000_output.nc')
+#datas=create_nl_plot(exps)
+#import netCDF4 as nc 
+#output = nc.Dataset('/home/ivo/dpr_data/vae/circle/P4_nl100/1000_1000_output.nc')
    
 #%% 
 
-if __name__=='__main__':
-    #Run experiment
-    iexp = int(sys.argv[2])
-    if iexp<len(exps):
-        run_exp(exps[iexp])
+run_exp(exps[0])
+
+
+nc = xr.open_dataset('/home/ivo/dpr_data/vae/circle/P4T_output.nc')
+
+#%% Plot 
+
+import matplotlib.pyplot as plt
+plt.close('all')
+options = {'seed':1000,'time':20}
+plt.figure()
+for exp in np.array(nc['experiment']):
+    data = nc['ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
+    Y = [obs_func(e) for e in data.data]
+    plt.plot(Y, label=exp+' for', linestyle='-')
+    data = nc['ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
+    Y = [obs_func(e) for e in data.data]
+    plt.plot(Y, label=exp+' ana', linestyle='--')
+xx = nc['truth'].sel(**{'experiment':'ETKF',**options})
+plt.plot([0,63],obs_func(xx.data)*np.array([1,1]),'k--',label='truth')
+plt.legend(loc='lower right')
+
+plt.figure()
+for exp in np.array(nc['experiment']):
+    if 'latent_ensemble' not in nc:
+        continue
+    data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
+    plt.plot(data.data, label=exp+' for', linestyle='-')
+    data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
+    plt.plot(data.data, label=exp+' ana', linestyle='--')
+    xx = nc['latent_truth'].sel(**{'experiment':exp,**options})
+    plt.plot([0,63],xx.data*np.array([1,1]),'k--',label='truth')
+plt.legend(loc='lower right')
+
+# if __name__=='__main__':
+#     #Run experiment
+#     iexp = int(sys.argv[2])
+#     if iexp<len(exps):
+#         run_exp(exps[iexp])
+
+

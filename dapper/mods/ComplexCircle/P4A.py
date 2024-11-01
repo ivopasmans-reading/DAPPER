@@ -107,7 +107,9 @@ def create_nl_plot(exps):
     
     return datas
 
-#create_nl_plot(exps[6:])
+if __name__!='__main__':
+    create_nl_plot(exps[6:])
+    create_plots(exps[-1])
     
 #%% 
 
