@@ -44,15 +44,16 @@ def obs_factory(alpha):
     return obs_func, obs_Dfunc
 
 #Create the settings for the experiment
-exp_name = "P4T"
-clima_parameters = {}
+exp_name = "P42d"
+clima_parameters = {'hp_parameters':{'latent_dim':2}, 'filename':'clima2d'}
+xp_parameters = {'names':['ETKF','single-clima','single-transfer']}
 exps = []
     
-xp_parameters = {'names':['ETKF','single-transfer']}
+
 for nl_parameter in [1.]:
     obs_func, obs_Dfunc = obs_factory(nl_parameter) 
-    exp = DaExperiment(exp_name, run_time=20,
-                       Nruns=2, Nclima=1,
+    exp = DaExperiment(exp_name, 
+                       Nruns=8, Nclima=8,
                        da_model=DapperModel(obs_func=obs_func),
                        xp_parameters=xp_parameters,
                        clima_parameters=clima_parameters)
@@ -81,7 +82,36 @@ def create_plots(exp):
     
     plotter.close()
     
-def create_nl_plot(exps):
+def plot_latent(it,exp):
+    from matplotlib import pyplot as plt
+    experiment='single-transfer'
+    nc = xr.open_dataset(exp.filepath_output)
+    seeds = nc['seed'].data
+    times = nc['time'].data
+    Efor = nc['ensemble'].sel(stage='forecast',seed=seeds[0],experiment=experiment).data
+    Eana = nc['ensemble'].sel(stage='analysis',seed=seeds[0],experiment=experiment).data
+    Lfor = nc['latent_ensemble'].sel(stage='forecast',seed=seeds[0],experiment=experiment).data
+    Lana = nc['latent_ensemble'].sel(stage='analysis',seed=seeds[0],experiment=experiment).data
+    truth = nc['latent_truth'].sel(seed=seeds[0],experiment=experiment).data
+    
+    plt.close('all')
+    fig = plt.figure(figsize=(6,6))
+    ax = fig.subplots(1,1)
+    ax.plot(Efor[it,:,0],Efor[it,:,1],'bx',alpha=.7)
+    ax.plot(Eana[it,:,0],Eana[it,:,1],'gx',alpha=.7)
+    ax.plot(Lfor[it,:,0],Lfor[it,:,1],'bo',alpha=.7)
+    ax.plot(Lana[it,:,0],Lana[it,:,1],'go',alpha=.7)
+    ax.plot(truth[it,0],truth[it,1],'ko')
+    ax.set_xlabel(r'$z_{0}$')
+    ax.set_ylabel(r'$z_{1}$')
+    ax.set_xlim(-2., 2.)
+    ax.set_ylim(-2., 2.)
+    ax.set_aspect(1)
+   
+    nc.close()
+    
+    
+def create_latent_plot(exps):
     datas = []
     plot = SeriesPlots('nonlinear', FIG_DIR)
     pattern = re.compile(".*_([0-9]+).pkl") 
@@ -105,83 +135,44 @@ def create_nl_plot(exps):
 
 #%% 
 
-# if __name__=='__main__':
-#     #Run experiment
-#     iexp = int(sys.argv[2])
-#     if iexp<len(exps):
-#         run_exp(exps[iexp])
+#if __name__=='__main__':
+#    #Run experiment
+#    iexp = int(sys.argv[2])
+#    if iexp<len(exps):
+#        run_exp(exps[iexp])
         
 #%% 
 
-run_exp(exps[0])
+#run_exp(exps[0])
+#nc = xr.open_dataset('/home/ivo/dpr_data/vae/circle/P4T_output.nc')
 
-#%%
+# import matplotlib.pyplot as plt
+# plt.close('all')
+# options = {'seed':1000,'time':20}
+# plt.figure()
+# for exp in np.array(nc['experiment']):
+#     data = nc['ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
+#     Y = [obs_func(e) for e in data.data]
+#     plt.plot(Y, label=exp+' for', linestyle='-')
+#     data = nc['ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
+#     Y = [obs_func(e) for e in data.data]
+#     plt.plot(Y, label=exp+' ana', linestyle='--')
+# xx = nc['truth'].sel(**{'experiment':'ETKF',**options})
+# plt.plot([0,63],obs_func(xx.data)*np.array([1,1]),'k--',label='truth')
+# plt.legend(loc='lower right')
 
-from vae_plots import MemberValuesPlot, CompoundedStyles
-plot = MemberValuesPlot(FIG_DIR, exp)
-plot.style = CompoundedStyles()
-plot = set_styles(plot)
-plot.plot_values()
-plot.save()
+# plt.figure()
+# for exp in np.array(nc['experiment']):
+#     if 'latent_ensemble' not in nc:
+#         continue
+#     data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
+#     plt.plot(data.data, label=exp+' for', linestyle='-')
+#     data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
+#     plt.plot(data.data, label=exp+' ana', linestyle='--')
+#     xx = nc['latent_truth'].sel(**{'experiment':exp,**options})
+#     plt.plot([0,63],xx.data*np.array([1,1]),'k--',label='truth')
+# plt.legend(loc='lower right')
 
-#%% Plot 
-
-import matplotlib.pyplot as plt
-nc = xr.open_dataset('/home/ivo/dpr_data/vae/circle/P4T_output.nc')
 
 
-plt.close('all')
-options = {'seed':1000,'time':20}
-plt.figure()
-plt.gcf().subplots_adjust(left=.2)
-for exp in np.array(nc['experiment']):
-    data = nc['ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
-    Y = [obs_func(e) for e in data.data]
-    plt.plot(Y, label=exp+' for', linestyle='-')
-    data = nc['ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
-    Y = [obs_func(e) for e in data.data]
-    plt.plot(Y, label=exp+' ana', linestyle='--')
-xx = nc['truth'].sel(**{'experiment':'ETKF',**options})
-plt.grid()
-plt.plot([0,63],obs_func(xx.data)*np.array([1,1]),'k--',label='truth')
-plt.xlabel(r'member $n$'); plt.ylabel(r"$\mathbf{H}\mathbf{x}^{(n)}$")
-plt.legend(loc='upper right')
 
-plt.figure()
-for exp in np.array(nc['experiment']):
-    if 'latent_ensemble' not in nc:
-        continue
-    data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'forecast',**options})
-    plt.plot(data.data, label=exp+' for', marker='o', linestyle='none')
-    data = nc['latent_ensemble'].sel(**{'experiment':exp,'stage':'analysis',**options})
-    plt.plot(data.data, label=exp+' ana', marker='x', linestyle='none')
-    xx = nc['latent_truth'].sel(**{'experiment':exp,**options})
-plt.plot([0,63],xx.data*np.array([1,1]),'k--',label='truth')
-plt.grid()
-plt.xlabel(r'member $n$'); plt.ylabel(r"$\mathbf{z}^{(n)}$")
-plt.legend(loc='lower right')
-nc.close()
-
-with open('/home/ivo/dpr_data/vae/decoder.pkl','rb') as stream:
-    data = dill.load(stream)
-plt.figure()
-plt.scatter(np.array(data['x'][0][:,0]), 
-            np.array(data['x'][0][:,1]), c=data['z'],cmap='hot')
-cb=plt.colorbar(label="z")
-plt.xlim(-1.5,1.5)
-plt.ylim(-1.5,1.5)
-plt.xlabel('x')
-plt.ylabel('y')
-plt.grid()
-plt.gca().set_aspect(1)
-
-#%%
-
-plt.close('all')
-plt.gcf().subplots_adjust(left=.2)
-x=np.linspace(-179.9,179.9)
-plt.plot(x,np.minimum(np.maximum(np.tan(.5*np.deg2rad(x)),-10),10),'k-')
-plt.xlabel(r'$\psi_{N}$ [deg]')
-plt.ylabel(r'$H$')
-plt.xticks(np.arange(-180,181,45))
-plt.grid()
