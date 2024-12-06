@@ -303,7 +303,7 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_scale_layer(self.hp)
             self.builder.build_encoder(self.hp)
             self.builder.build_decoder(self.hp)
-            self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.1*epoch))
+            self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.05*epoch)) #IP
             self.builder.build_stopper()
             self.builder.build_lr()
             self.builder.build_model(self.hp)
@@ -312,10 +312,9 @@ class DenseVae(tuner.HyperModel):
             self.builder.build_scale_layer(self.hp)
             self.builder.build_encoder(self.hp)
             self.builder.build_decoder(self.hp)
-            self.builder.build_alpha(lambda epoch : keras.ops.convert_to_tensor(0.0))
-            #self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.1*epoch))
-            self.builder.build_stopper()
-            self.builder.build_lr()
+            self.builder.build_alpha(lambda epoch : keras.ops.exp(-0.1*epoch))
+            self.builder.build_stopper(start_from_epoch=100) #IP
+            self.builder.build_lr(min_lr=5e-7) #IP
             self.builder.build_model(self.hp)
         elif self.hp.get('architecture')=='inno':
             self.builder.reset()
@@ -330,9 +329,9 @@ class DenseVae(tuner.HyperModel):
         model = self.builder.model 
 
         # Callback that keeps track of epoch and other diagnostics.
-        self.diag  = [DiagCallback(**model.diags)] 
+        self.callbacks  = [self.builder.lr, self.builder.stopper,  DiagCallback()]
         if USE_TENSORBOARD:
-            self.diag += [tensorboard_callback]
+            self.callbacks += [tensorboard_callback]
 
         # Compile before use and return.
         self.compile(model)
@@ -395,8 +394,8 @@ class DenseVae(tuner.HyperModel):
                     'verbose': hp.get('verbose'),
                     **kwargs
                     }
-        fit_args['callbacks'] = fit_args['callbacks']
-        fit_args['callbacks'] += self.builder.lr + self.builder.stopper + self.diag
+        fit_args['callbacks']  = fit_args['callbacks']
+        fit_args['callbacks'] += self.callbacks
 
         keras.utils.set_random_seed(1000)
         return model.fit(*args, **fit_args)
@@ -431,7 +430,7 @@ class DenseVae(tuner.HyperModel):
 
         # Training setup
         hp.Fixed('verbose',False)
-        hp.Fixed('epochs', 50)
+        hp.Fixed('epochs', 100) #IP
         hp.Int('batch_size', default=64, min_value=1, max_value=1024,
                sampling='log')
         hp.Float('lr_init', default=5e-3, min_value=5e-4, max_value=1e-2,
@@ -492,8 +491,8 @@ def tune_DenseVae(x):
                  sampling='log')
 
     architecture = tuner.Hyperband(hypermodel=hypermodel,
-                                   objective=tuner.Objective(
-                                       'loss', direction='min'),
+                                   objective=tuner.Objective('loss', 
+                                                             direction='min'),
                                    hyperparameters=hp,
                                    tune_new_entries=False,
                                    max_epochs=50,
@@ -513,7 +512,7 @@ class VAE(keras.Model):
     """ Variational autoencoder model. """
 
     def __init__(self, encoder, decoder, mc_samples=1, l2_rotation=0.0, 
-                 alpha = lambda epoch : tf.Variable(1.0), 
+                 alpha = lambda epoch : 0.0,
                  var_min=.05**2, 
                  **kwargs):
 
@@ -521,9 +520,8 @@ class VAE(keras.Model):
         self.mc_samples = mc_samples
         self.encoder = encoder
         self.decoder = decoder
-
         self.l2_rotation = l2_rotation
-        self.alpha = alpha
+        self.alpha_function = alpha
         
         self.alpha_tracker = keras.metrics.Mean(name='alpha')
         self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
@@ -532,8 +530,10 @@ class VAE(keras.Model):
         self.angle_loss_tracker = keras.metrics.Mean(name="angle_loss")
         self.z_M1_tracker = keras.metrics.Mean(name='z_M1')
         self.z_M2_tracker = keras.metrics.Mean(name='z_M2')
-        self.diags = {'epoch': tf.Variable(0.0, trainable=False)}
         self.x_var_min = keras.ops.convert_to_tensor(var_min)
+        
+        self.alpha_factor = tf.Variable(0.0, trainable=False)
+        self.noise_layer = NoiseLayer()
 
     def get_config(self):
         return {**super().get_config(),
@@ -541,7 +541,7 @@ class VAE(keras.Model):
                 'decoders': self.decoder.get_config(),
                 'mc_samples': self.mc_samples,
                 'l2_rotation': self.l2_rotation,
-                'alpha': self.alpha}
+                'alpha_function': self.alpha_function}
     
     @classmethod
     def from_config(cls, config):
@@ -551,22 +551,25 @@ class VAE(keras.Model):
         decoder = keras.saving.deserialize_keras_object(decoder, safe_mode=False)
         mc_samples = config.pop('mc_samples')
         l2_rotation = config.pop('l2_rotation')
-        alpha = config.pop('alpha')
+        alpha = config.pop('alpha_function')
         return cls(encoder, decoder, mc_samples, l2_rotation, alpha)
     
+    def set_alpha(self, epoch):
+        self.alpha_factor.assign(self.alpha_function(epoch))
+    
     def train_step(self, data):
-        with tf.GradientTape() as tape:
+        
+        with tf.GradientTape(persistent=True) as tape:  
+            #data = self.noise_layer(data1, self.alpha_factor)
+            
             #Sample latent z \sim p(x|z) 
             _, _, z = self.encoder(data)
-            
-            #Regularization for convergence.
-            alpha = self.alpha(self.diags['epoch'])
     
             #Different losses in cost function
-            kl_loss = keras.ops.mean(self.kl_loss(data))
-            rec_loss = keras.ops.mean(self.mc_reconstruction_loss(data, z, alpha))
+            kl_loss = keras.ops.mean(self.kl_loss(data)) 
+            rec_loss = keras.ops.mean(self.mc_reconstruction_loss(data, z, self.alpha_factor))
             angle_loss = keras.ops.mean(self.mc_angle_loss(data, z))
-            total_loss = rec_loss + kl_loss + angle_loss
+            total_loss = (rec_loss + kl_loss + angle_loss)
 
             #Moments latent distribution. 
             z_M1 = keras.ops.mean(z, axis=0)
@@ -575,13 +578,11 @@ class VAE(keras.Model):
         weights = self.trainable_weights
         grads = tape.gradient(total_loss, weights)
         self.optimizer.apply_gradients(zip(grads, weights))
-
-        # Update losses.
-        self.total_loss_tracker.update_state(total_loss)
+        
         self.reconstruction_loss_tracker.update_state(rec_loss)
         self.kl_loss_tracker.update_state(kl_loss)
         self.angle_loss_tracker.update_state(angle_loss)
-        self.alpha_tracker.update_state(alpha)
+        self.total_loss_tracker.update_state(total_loss)
         self.z_M1_tracker.update_state(z_M1)
         self.z_M2_tracker.update_state(z_M2)
 
@@ -623,9 +624,19 @@ class VAE(keras.Model):
         x_mean, x_log_var, _, _ = self.decoder(z)
         loss = keras.ops.square(data - x_mean) / self.x_var_min
         return keras.ops.sum(loss, axis=1)
+    
+    def gauss_loss(self, z, alpha):
+        
+        batch = keras.ops.shape(z1)[0]
+        dim = keras.ops.shape(z1)[1]
+        epsilon = keras.random.normal(shape=(batch, dim)) 
+        
+        
+        z = (1-alpha) * z1 + alpha * epsilon #IP
 
     def mc_reconstruction_loss(self, data, z, alpha):
         """ Reconstruction loss estimated from Monte-Carlo approximation. """
+        self.alpha_tracker.update_state(alpha)
 
         z_mean, z_log_var, _ = self.encoder(data)
         x_mean, x_log_var, x_sin, _ = self.decoder(z)
@@ -660,7 +671,7 @@ class VAE(keras.Model):
         # KL loss
         z_mean, z_log_var, _ = self.encoder(data)
         # Trace Sigma + log 1/det(Sigma) - dim + ||mu-0||**2
-        KL = -z_log_var - 1 + keras.ops.square(z_mean) + keras.ops.exp(z_log_var)
+        KL = -z_log_var - k + keras.ops.square(z_mean) + keras.ops.exp(z_log_var)
         loss = 0.5 * keras.ops.sum(KL, axis=1)
         return loss
 
@@ -682,16 +693,12 @@ class VAE(keras.Model):
 class DiagCallback(keras.callbacks.Callback):
     """ Make epoch and batch indices available in the code. """
 
-    def __init__(self, **kwargs):
-        self.diags = kwargs
+    def on_epoch_begin(self, epoch, logs=None):
+        self.model.set_alpha(epoch)
 
-    def on_epoch_begin(self, epoch, logs={}):
-        if 'epoch' in self.diags:
-            self.diags['epoch'].assign(epoch)
-
-    def on_batch_begin(self, batch, logs={}):
-        if 'batch' in self.diags:
-            self.diags['batch'].assign(batch)
+    def on_batch_begin(self, batch, logs=None):
+        pass
+        
 
 @keras.utils.register_keras_serializable(package="VAE")
 class SamplingLayer(layers.Layer):
@@ -702,7 +709,7 @@ class SamplingLayer(layers.Layer):
         batch = keras.ops.shape(mean)[0]
         dim = keras.ops.shape(mean)[1]
         epsilon = keras.random.normal(shape=(batch, dim)) 
-        return mean + keras.ops.exp(0.5 * log_var) * epsilon  # IP
+        return mean + keras.ops.exp(0.5 * log_var) * epsilon  
 
     def get_config(self):
         return super().get_config()
@@ -711,6 +718,28 @@ class SamplingLayer(layers.Layer):
     def from_config(cls, config):
         return cls(**config)
 
+
+@keras.utils.register_keras_serializable(package="VAE")
+class NoiseLayer(layers.Layer):
+    """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
+
+    def call(self, inputs, alpha):
+        Ncopies = 50
+        copies = keras.layers.Concatenate(axis=0)([inputs]*Ncopies)
+        
+        batch = keras.ops.shape(copies)[0]
+        dim = keras.ops.shape(copies)[1]
+        
+        copies = copies + 0.05 * alpha * keras.random.normal(shape=(batch, dim))
+        
+        return copies 
+
+    def get_config(self):
+        return super().get_config()
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 @keras.utils.register_keras_serializable(package="VAE")
 class VarScalingLayer(layers.Layer):
@@ -723,7 +752,8 @@ class VarScalingLayer(layers.Layer):
     def call(self, inputs):
         # Create kernel
         kernel = self.source.kernel
-        x = inputs + keras.ops.log(kernel)
+        sigma2 = keras.ops.log(kernel)
+        x = inputs + keras.ops.diag(sigma2)
         return x
 
     def get_config(self):

@@ -332,7 +332,7 @@ class VaeTransform(EnProcessor):
         _, _, state.E = self.model.encoder.predict(state.E, 
                                                    verbose=self.hp.get('verbose')) 
         x_latent, _, _ = self.model.encoder.predict(state.x[None,:], 
-                                                    verbose=False)
+                                                    verbose=self.hp.get('verbose'))
         state.E, x_latent = np.array(state.E), np.array(x_latent)
         
         #Save latent ensemble
@@ -413,7 +413,15 @@ class BackgroundVaeTransform(VaeTransform):
         self.hp.values['architecture'] = 'background'
         self.ref_model = model
         self.model = self.hypermodel.build(self.hp)
-        self.model.set_weights(self.ref_model.get_weights())        
+        self.model.set_weights(self.ref_model.get_weights())    
+        
+    def _reinitialize(self, model):
+        for layer in model.layers:
+            if 'hidden' in layer.name and hasattr(layer,'kernel_initializer'):
+                kernel_weights, bias_weights = layer.get_weights()
+                kernel_init = layer.kernel_initializer(shape=kernel_weights.shape)
+                bias_init = layer.bias_initializer(shape=bias_weights.shape)                
+                layer.set_weights([kernel_weights, bias_weights])
     
     def train(self, E, D): 
         if self.hp.get('verbose'):
@@ -423,11 +431,13 @@ class BackgroundVaeTransform(VaeTransform):
         self.hp.values['batch_size'] = batch_size
         
         #Reset learning rate, otherwise lr from last run is used. 
-        lr_init = self.hp.values['lr_init']*1e-2
+        lr_init = self.hp.values['lr_init'] * 1e-2
         self.model.optimizer.learning_rate.assign(lr_init)
         
         #Copy weights from climatology
         self.model.set_weights(self.ref_model.get_weights())
+        #self._reinitialize(self.model.encoder)
+        #self._reinitialize(self.model.decoder)
         
         #Rescale 
         layer = self.model.encoder.get_layer('z_mean_rescale')
@@ -436,6 +446,7 @@ class BackgroundVaeTransform(VaeTransform):
         layer.kernel.assign(layer.kernel/Zstd)
         
         #Recenter 
+        layer = self.model.encoder.get_layer('z_mean_rescale')
         Z, _, _ = self.model.encoder(E)
         Zmean = np.mean(Z, axis=0)
         layer.bias.assign(layer.bias - Zmean)
@@ -448,6 +459,14 @@ class BackgroundVaeTransform(VaeTransform):
         if self.hp.get('verbose'):
             print('END BKG FIT')
         
+    def plot_train(self):
+        import dill 
+        z = np.linspace(-4,4,100)
+        x = self.model.decoder(z)
+        
+        filepath = '/home/ivo/dpr_data/vae/decoder.pkl'
+        with open(filepath,'wb') as stream:
+            dill.dump({'z':z,'x':x}, stream)
         
 class InnoVaeTransform(VaeTransform):   
     """
@@ -533,7 +552,7 @@ class InnoVaeTransform(VaeTransform):
                 ref_layer = ref.get_layer(name) 
                 inno_layer.set_weights(ref_layer.get_weights())
                 
-        #copy_matched(self.ref_model.encoder, self.model.encoder)
+        #IP copy_matched(self.ref_model.encoder, self.model.encoder)
         copy_matched(self.ref_model.decoder, self.model.decoder)
         
         #Rescale 

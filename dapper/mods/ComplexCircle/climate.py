@@ -193,6 +193,7 @@ class ClimaExperiment(VaeExperiment):
     do_plot: bool = False
     da_model: DapperModel = dataclasses.field(default_factory = lambda : DapperModel())
     hp_parameters: dict = dataclasses.field(default_factory=dict)
+    filename: str = "climaK3"
 
     def __post_init__(self):
         self.hp_parameters = {'no_layers': 6,
@@ -225,7 +226,7 @@ class ClimaExperiment(VaeExperiment):
         """ Return default filepath for saving models."""
         A = int(self.da_model.amplitude*100)
         seed = int(self.seed)
-        return os.path.join(MODEL_PATH, f'climaK3_{A:02d}_{seed:04d}.pkl')
+        return os.path.join(MODEL_PATH, f'{self.filename}_{A:02d}_{seed:04d}.pkl')
 
     def save(self, filepath):
         with open(filepath, 'wb') as stream:
@@ -265,13 +266,13 @@ class ClimaExperiment(VaeExperiment):
         # Sample encoder
         dko = self.HMM.tseq.dko
         samples = self.xx[::dko]
-        zz_mu, zz_sig, zz = self.hypermodel.encoder.predict([samples])
+        zz_mu, zz_sig, zz = self.model.encoder.predict([samples])
         zz_sig = np.exp(.5*zz_sig)
 
         # Sample decoder
         z = np.random.normal(
             size=(np.size(samples, 0), self.hp.get('latent_dim')))
-        zxx_mu, zxx_sig, zxx_angle, zxx = self.hypermodel.decoder.predict(z)
+        zxx_mu, zxx_sig, zxx_angle, zxx = self.model.decoder.predict(z)
         zxx_sig = np.exp(.5*zxx_sig)
 
         # Plot distributions
@@ -302,10 +303,11 @@ class ClimaExperiment(VaeExperiment):
             # Fit hypermodel to output
             self.hypermodel.fit(self.hp, self.model, self.xx,
                                 verbose=False, shuffle=True)
-            #self.save(self.filepath)
+            self.save(self.filepath)
+            self.plot_clima()
             
         return self
-    
+
 @dataclasses.dataclass
 class XpsClass:
     """
