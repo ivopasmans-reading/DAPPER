@@ -1206,7 +1206,7 @@ class ReconstructionPlot(BasePlots):
         # Plot latent
         ax = self.axes[1]
         z = np.linspace(-4, 4, 8*10)
-        histo = scipy.stats.rv_histogram(np.histogram(self.zz, bins=z))
+        histo = scipy.stats.rv_histogram(np.histogram(self.zz[:,0], bins=z))
         z = .5*(z[1:]+z[:-1])
         norm = scipy.stats.norm(loc=np.mean(self.zz), scale=np.std(self.zz))
         ax.plot(z, norm.pdf(z), 'k-')
@@ -1374,11 +1374,6 @@ class MoviePlots(BasePlots):
             self.save()
             
     def plot_movie(self, fig_name, fps):
-        
-        for it,time in enumerate(self.data['time']):
-            data = self.data.sel(time='time')
-            self.fig_name = fig_name+f'/frame_{it:04d}'
-            
         movie_dir = os.path.dirname(self.fig_path)
         movie_file = os.path.join(movie_dir,fig_name+'.mp4')
         
@@ -1562,7 +1557,7 @@ class CrpsPlots(BasePlots):
         self.data = data
 
     def calculate_mean(self, data):
-        axis = [n for n, dim in enumerate(data.dims) if dim == 'seed']
+        axis = [n for n, dim in enumerate(data.dims) if dim == 'seed']        
         boot = bootstrap([np.array(data.data)], np.mean, axis=axis[0],
                          vectorized=True, n_resamples=BOOT_SAMPLES,
                          confidence_level=CONFIDENCE_LEVEL)
@@ -2239,7 +2234,72 @@ class SeriesPlots(BasePlots):
         return xr.Dataset(data)
     
 
+class MemberValuesPlot(BasePlots):
+    
+    def __init__(self, fig_dir, exp):
+        super().__init__(fig_dir)
+        self.exp = exp 
+        
+    def plot_values(self, figname='member', options = {'seed':1000,'time':20}):
+        plt.close('all')
+        self.fig_name = figname
+        self.nc = xr.open_dataset(self.exp.filepath_output)
+        names = np.array(self.nc['experiment'])
+        obs_func = self.exp.da_model.obs_func
+        
+        
+        self.fig = plt.figure(figsize=(8,6))
+        self.axes = self.fig.subplots(1,2).reshape((1,2))
+        self.fig.subplots_adjust(bottom=.2, top=.9, wspace=.33)
+        self.handles = []
+        
+        #observaiton space
+        ax = self.axes[0,0]
+        for name in names:
+            self.style.assign(name)
+            data = self.nc['ensemble'].sel(**{'experiment':name,
+                                              'stage':'forecast',**options})
+            Y = [obs_func(e) for e in data.data]
+            handle, = ax.plot(Y, label=name+' for', linestyle='-', color=self.style.color)
+            self.handles.append(handle)
+            data = self.nc['ensemble'].sel(**{'experiment':name,
+                                              'stage':'analysis',**options})
+            Y = [obs_func(e) for e in data.data]
+            handle, = ax.plot(Y, label=name+' ana', linestyle='--', color=self.style.color)
+            self.handles.append(handle)
+        xx = self.nc['truth'].sel(**{'experiment':'ETKF',**options})
+        handle, = ax.plot([0,63],obs_func(xx.data)*np.array([1,1]),'k--',label='truth')
+        self.handles.append(handle)
+        
+        ax = self.axes[0,1]
+        for name in names:
+            if 'latent_ensemble' not in self.nc:
+                continue
+            self.style.assign(name)
+            data = self.nc['latent_ensemble'].sel(**{'experiment':name,
+                                                     'stage':'forecast',**options})
+            ax.plot(data.data, label=name+' for', marker='o', linestyle='none',
+                    color=self.style.color)
+            data = self.nc['latent_ensemble'].sel(**{'experiment':name,
+                                                     'stage':'analysis',**options})
+            ax.plot(data.data, label=name+' ana', marker='x', markerfacecolor=self.style.color, 
+                    linestyle='none')
+        xx = self.nc['latent_truth'].sel(**{'experiment':name,**options})
+        plt.plot([0,63],xx.data*np.array([1,1]),'k--',label='truth')
+        self.nc.close()
+        
+        self.fig.legend(handles=self.handles, loc='lower center', ncol=3)
 
+        
+        for ax in self.axes.ravel():
+            ax.grid()
+            ax.set_xlabel(r"member $n$")
+            
+        self.axes[0,0].set_ylabel(r"$\mathbf{H}\mathbf{x}^{(n)}$")
+        self.axes[0,1].set_ylabel(r"$\mathbf{z}^{(n)}$")
+        
+            
+        
 
 # %% Needs revision
 
