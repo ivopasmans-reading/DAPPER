@@ -238,6 +238,37 @@ class GaussRV(RV_with_mean_and_cov):
         D = rng.standard_normal((N, len(R))) @ R
         return D
     
+class MultimodalGaussRV(RV_with_mean_and_cov):
+    """ Bimodal distribution """
+    
+    def __init__(self, mu=[0], C=[0], weights=[1.], M=None, **kwargs):
+        #List of Gaussians
+        self.gaussians = [GaussRV(mu=mu1, C=C1, M=M) for mu1,C1 in zip(mu,C)]
+        #Weights for different classes
+        self.indices = self._create_rv_class(weights)
+        #Dimension observation space
+        self.M = self.gaussians[0].M
+        self.C = CovMat(np.sum([gauss.C.full for gauss in self.gaussians], axis=0))
+        self.mu = np.sum([gauss.mu for gauss in self.gaussians], axis=0)
+        
+    def _create_rv_class(self, weights):
+        weights = weights / np.sum(weights)
+        indices = np.arange(0,len(weights))
+        rv_uniform = stats.rv_discrete(values=(indices,weights))
+        return rv_uniform
+        
+    def _sample(self, N):
+        indices = self.indices.rvs(size=(N,))
+        samples = np.array([self.gaussians[index].sample(1)[0] for index in indices])
+        return samples
+        
+    def sample(self, N):
+        if self.C == 0:
+            return np.zeros((N, self.M))
+        else:
+            return self._sample(N)
+        
+    
 class SkewedGaussRV(RV_with_mean_and_cov):
     """ Skewed Gaussian. """
     

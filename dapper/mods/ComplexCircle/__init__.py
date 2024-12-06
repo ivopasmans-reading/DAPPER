@@ -204,6 +204,12 @@ def create_obs_factory(func, sig, distribution=('normal',), jacobian=None):
         elif 'skewedNormal' in distribution[0]:
             noise = tools.randvars.SkewedGaussRV(C=sig**2, M=M, 
                                                  skew=distribution[1], mode=0)
+        elif 'bimodal' in distribution[0]:
+            C = [sig**2, sig**2]
+            mu = [0.,distribution[1]]
+            weights = [.7, .3]
+            noise = tools.randvars.MultimodalGaussRV(C=C, mu=mu,
+                                                     M=M, weights=weights)
         else:
             raise Exception(f"distribution {distribution} is unknown")
         
