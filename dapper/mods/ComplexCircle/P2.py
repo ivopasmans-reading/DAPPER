@@ -9,7 +9,7 @@ Code for experiment 1 in the paper.
 """
 
 from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
-from vae_plots import plot_exp, MoviePlots, TimePlots, SeriesPlots, set_styles, PrintOutput
+from vae_plots import plot_exp, MoviePlots, TimePlots, SeriesPlots, set_styles
 import os, sys, re, dill
 import xarray as xr
 
@@ -79,17 +79,13 @@ def create_amplitude_plot(exps):
 datas=create_amplitude_plot(exps[:-1])
 create_plots(exps[-1])
 
-E=PrintOutput(exps[-1].filepath[:-4])
-E.print(os.path.join(FIG_DIR, exps[-1].save_name, 'metrics_ana.txt'),'analysis')
-E.print(os.path.join(FIG_DIR, exps[-1].save_name, 'metrics_for.txt'),'forecast')
-
-#%%
+#%% Uncomment when using runner2.sh
   
-if __name__=='__main__':
-    #Run experiment
-    iexp = int(sys.argv[2])
-    if iexp<len(exps):
-        run_exp(exps[iexp])
+# if __name__=='__main__':
+#     #Run experiment
+#     iexp = int(sys.argv[2])
+#     if iexp<len(exps):
+#         run_exp(exps[iexp])
     
 
     

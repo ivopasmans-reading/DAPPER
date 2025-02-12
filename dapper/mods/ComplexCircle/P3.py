@@ -72,25 +72,14 @@ def create_skew_plot(exps):
         plot.add_exp(data_for, skew)
         
     plot = set_styles(plot)
-    plot.plot()
-    
-    
+    plot.plot()    
 
-# create_skew_plot(exps)
-# for exp in exps:
-#     if exp.skew == 0:
-#         create_plots(exp)
-        
+#%% Uncomment when running runner2.sh
 
-#%%
-
-# for exp in exps:
-#     run_exp(exp)
-
-if __name__=='__main__':
-    iexp = int(sys.argv[2])
-    if iexp<len(exps):
-        run_exp(exps[iexp])
+# if __name__=='__main__':
+#     iexp = int(sys.argv[2])
+#     if iexp<len(exps):
+#         run_exp(exps[iexp])
     
        
         

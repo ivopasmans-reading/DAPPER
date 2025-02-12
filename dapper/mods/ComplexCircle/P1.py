@@ -9,7 +9,7 @@ Code for experiment 1 in the paper.
 """
 
 from climate import DapperModel, DaExperiment, FIG_DIR
-from vae_plots import plot_exp,  MoviePlots, TimePlots, SeriesPlots, set_styles, PrintOutput
+from vae_plots import plot_exp,  MoviePlots, TimePlots, SeriesPlots, set_styles
 import os, sys, re, dill
 import xarray as xr
 import numpy as np
@@ -69,14 +69,6 @@ def create_rate_plot(exps):
     
     return datas
 
-#datas = create_rate_plot(exps)
-#create_plots(exps[3])
-
-#E=PrintOutput(exps[3].filepath[:-4])
-#E.print(os.path.join(FIG_DIR, exps[3].save_name, 'metrics_ana.txt'),'analysis')
-#E.print(os.path.join(FIG_DIR, exps[3].save_name, 'metrics_for.txt'),'forecast')
-
-
 def plot_correlation_xy(exp):
     from matplotlib import pyplot as plt
     from matplotlib import colors as mcolors
@@ -129,7 +121,7 @@ def plot_correlation_xy(exp):
     filepath = os.path.join(FIG_DIR,'correlation_'+exp.save_name+'_'+experiment+'.png')
     fig.savefig(filepath,dpi=300)
 
-#%%
+#%% Uncomment when using runner2.sh
   
 # if __name__=='__main__':
 #     #Run experiment

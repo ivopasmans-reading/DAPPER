@@ -18,13 +18,12 @@ from dapper.tools.seeding import set_seed
 import shutil
 import os
 from datetime import datetime
-from sklearn import preprocessing
 import scipy
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/vae_obs/test'
+FIG_DIR = '~/Figures/vae/vae_obs/test'
 # File path used to save model
-MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima.keras'
+MODEL_PATH = '~/dpr_data/vae/circle/clima.keras'
 # Number of ensemble member
 Nens = 64
 dko, sigo = 10, .1
@@ -116,18 +115,12 @@ factory = eda.EndaFactory()
 xps = []
 xps.append(eda.EnDa(Nens, [], name='no DA'))
 xps.append(factory.build(Nens, 'Sqrt svd', name='ETKF', rot=False))
-#xps.append(factory.build(Nens, 'ETKF_D', '',
-#           No=1*Nens, name='EnKF_D1', rot=False))
-#xps.append(factory.build(Nens, 'ETKF_D', '',
-#           No=64*Nens, name='EnKF_D64', rot=False))
 xps.append(factory.build(Nens, 'ETKF_D', No=64*Nens, name='VKF-clima',
                          VaeTransforms=[vae_trans]))
 xps.append(factory.build(Nens, 'ETKF_D', No=64*Nens, name='VKF-clima-obs',
                          VaeTransforms=[inno_trans,vae_trans]))
-#xps.append(factory.build(Nens, 'ETKF_D', No=64*Nens, name='VKF-cycle',
-#                         VaeTransforms=[cycle_trans]))
-#xps.append(factory.build(Nens, 'ETKF_D', No=64*Nens, name='VKF-trans',
-#                         VaeTransforms=[bkg_trans]))
+xps.append(factory.build(Nens, 'ETKF_D', No=64*Nens, name='VKF-trans',
+                         VaeTransforms=[bkg_trans]))
 
 for xp in xps:
     print("Assimilating ",xp.name)
@@ -148,12 +141,6 @@ for xp in xps:
 plotCRPS.plot_crps()
 plotCRPS.calculate_crps()
 
-# %% Plot principal components
-
-plotPC = plots.PrincipalPlots(FIG_DIR)
-plotPC.add_series('VAE', zxx_mu, zxx_pc, zxx_angle)
-plotPC.plot_pc()
-plotPC.save()
 
 #%% Difference weights 
 
