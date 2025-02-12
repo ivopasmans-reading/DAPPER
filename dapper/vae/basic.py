@@ -16,7 +16,7 @@ import os
 import dill, random
 import tensorboard
 
-LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
+LOG_DIR = '~/dpr_data/vae/tensorboard/logs'
 tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
 
 # constant pi
@@ -974,7 +974,7 @@ def tune_DenseVae(x):
     """ Function to tune the hyperparameters in DenseVae. """
 
     hypermodel = DenseVae()
-    file_dir = '/home/ivo/Code/VAE/tmp'
+    file_dir = '~/Code/VAE/tmp'
 
     # Writer logs
     tensorboard_writer = tf.keras.callbacks.TensorBoard(file_dir)

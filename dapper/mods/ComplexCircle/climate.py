@@ -30,9 +30,9 @@ from numba import cuda
 tf.config.experimental.list_physical_devices()
 
 # File path used to save model
-MODEL_PATH = '/home/ivo/dpr_data/vae/circle'
+MODEL_PATH = '~/dpr_data/vae/circle'
 # File path used to save figures.
-FIG_DIR = '/home/ivo/Figures/vae'
+FIG_DIR = '~/Figures/vae'
 # Default names of the experimental configurations.
 XP_NAMES = ['no DA', 'ETKF', 'single-clima', 'single-transfer',
             'double-clima', 'double-transfer']
