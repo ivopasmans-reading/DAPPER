@@ -9,12 +9,12 @@ Code for experiment 1 in the paper.
 """
 
 from climate import DapperModel, DaExperiment, run_exp, FIG_DIR
-from vae_plots import plot_exp, calculate_output, MoviePlots, TimePlots, SeriesPlots, set_styles
+from vae_plots import plot_exp, MoviePlots, TimePlots, SeriesPlots, set_styles, PrintOutput
 import os, sys, re, dill
 import xarray as xr
 
 #Create the settings for the experiment
-exp_name = "paper_exp2"
+exp_name = "P2"
 xp_parameters = {'names':['no DA','ETKF','single-clima','single-transfer']}
 clima_parameters = {}
 
@@ -23,6 +23,14 @@ for amplitude in [0,.1,.2,.3,.4,.6]:
     exp = DaExperiment(exp_name+"_{:02d}".format(int(10*amplitude)), Nruns=8, Nclima=8,
                        da_model=DapperModel(amplitude=amplitude),
                        xp_parameters=xp_parameters, 
+                       clima_parameters=clima_parameters)
+    exp.amplitude = amplitude
+    exps.append(exp)
+    
+for amplitude in [.2]:
+    exp = DaExperiment(exp_name, Nruns=8, Nclima=8,
+                       da_model=DapperModel(amplitude=amplitude),
+                       xp_parameters={}, 
                        clima_parameters=clima_parameters)
     exp.amplitude = amplitude
     exps.append(exp)
@@ -61,14 +69,19 @@ def create_amplitude_plot(exps):
             data_for, data_ana = dill.load(stream)
             datas.append(data_for)
             
-        amplitude = int(re.match(pattern, exp.filepath)[1]) / 10.
-        plot.add_exp(data_for, amplitude)
+        plot.add_exp(data_for, exp.amplitude)
         
     plot = set_styles(plot)
     plot.plot()
     
     return datas
 
+datas=create_amplitude_plot(exps[:-1])
+create_plots(exps[-1])
+
+E=PrintOutput(exps[-1].filepath[:-4])
+E.print(os.path.join(FIG_DIR, exps[-1].save_name, 'metrics_ana.txt'),'analysis')
+E.print(os.path.join(FIG_DIR, exps[-1].save_name, 'metrics_for.txt'),'forecast')
 
 #%%
   
