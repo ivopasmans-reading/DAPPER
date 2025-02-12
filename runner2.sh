@@ -1,7 +1,7 @@
 #!/bin/bash
 
-source "/home/ivo/Env/keras/bin/activate"
-export PYTHONPATH=$PYTHONPATH:"/home/ivo/Code/VAE/dapper/mods/ComplexCircle"
+source "~/Env/keras/bin/activate"
+export PYTHONPATH=$PYTHONPATH:"~/Code/VAE/dapper/mods/ComplexCircle"
 export MODELPATH="dapper/mods/ComplexCircle/"
 export CUDA_VISIBLE_DEVICES=""
 

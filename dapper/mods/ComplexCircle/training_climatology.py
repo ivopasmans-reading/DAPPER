@@ -22,9 +22,9 @@ from sklearn import preprocessing
 import scipy
 
 # Directory in which the figures will be stored.
-FIG_DIR = '/home/ivo/Figures/vae/vae_obs/test'
+FIG_DIR = '~/Figures/vae/vae_obs/test'
 # File path used to save model
-MODEL_PATH = '/home/ivo/dpr_data/vae/circle/clima.keras'
+MODEL_PATH = '~/dpr_data/vae/circle/clima.keras'
 # Number of ensemble member
 Nens = 64
 dko, sigo = 10, .1

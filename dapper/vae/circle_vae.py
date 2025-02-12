@@ -22,7 +22,7 @@ from keras import backend as K
 #Directory to store logs from VAE optimization. 
 USE_TENSORBOARD = False
 if USE_TENSORBOARD:
-    LOG_DIR = '/home/ivo/dpr_data/vae/tensorboard/logs'
+    LOG_DIR = '~/dpr_data/vae/tensorboard/logs'
     tensorboard_callback = keras.callbacks.TensorBoard(log_dir=LOG_DIR)
 
 # constant pi
