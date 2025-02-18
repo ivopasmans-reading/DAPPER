@@ -1,4 +1,8 @@
+This is a DAPPER fork coding code used to generate datasets and figures for the paper "Ensemble Kalman filter in latent space using a
+variational autoencoder pair" submitted to the Quarterly Journal of the Royal Meteorological Society. This fork is not associated with the official 
+[DAPPER repository](https://github.com/nansencenter/DAPPER.git) .
 
+## DAPPER
 <!--
 !      ___   _   ___ ___ ___ ___
 !     |   \ /_\ | _ \ _ \ __| _ \
