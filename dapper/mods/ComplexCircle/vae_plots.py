@@ -131,11 +131,6 @@ def plot_exp(exp, exp_fig_dir):
         plotHist.plot_taylor('taylor_'+stage)
         plotHist.save()
         
-
-        
-
-
-
 # %% Abstract classes for plotting.
 
 def correlation(x, axis=-1):
@@ -1044,14 +1039,18 @@ class ReconstructionPlot(BasePlots):
         z = np.linspace(-4, 4, 8*10)
         histo = scipy.stats.rv_histogram(np.histogram(self.zz, bins=z))
         z = .5*(z[1:]+z[:-1])
-        norm = scipy.stats.norm(loc=np.mean(self.zz), scale=np.std(self.zz))
+        #norm = scipy.stats.norm(loc=np.mean(self.zz), scale=np.std(self.zz))
+        norm = scipy.stats.norm(loc=0, scale=1)
         ax.plot(z, norm.pdf(z), 'k-')
-        ax.plot(z, histo.pdf(z), 'b-')
+        ax.plot(z, histo.pdf(z), 'r--')
 
         ax.set_xlim(-4, 4)
         ax.set_title('Climatology latent')
         ax.set_xlabel('z')
         ax.set_ylabel('prob(z)')
+        
+        for ax in self.axes:
+            ax.grid()
 
 
 #%% Classes to plot different figures.  

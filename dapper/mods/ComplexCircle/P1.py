@@ -8,7 +8,7 @@ Code for experiment 1 in the paper.
 @author: ivo
 """
 
-from climate import DapperModel, DaExperiment, FIG_DIR
+from climate import DapperModel, DaExperiment, FIG_DIR, run_exp
 from vae_plots import plot_exp,  MoviePlots, TimePlots, SeriesPlots, set_styles
 import os, sys, re, dill
 import xarray as xr

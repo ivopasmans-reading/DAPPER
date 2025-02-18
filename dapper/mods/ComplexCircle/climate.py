@@ -30,9 +30,9 @@ from numba import cuda
 tf.config.experimental.list_physical_devices()
 
 # File path used to save model
-MODEL_PATH = '~/dpr_data/vae/circle'
+MODEL_PATH = os.path.join(os.environ['HOME'],'dpr_data/vae/circle')
 # File path used to save figures.
-FIG_DIR = '~/Figures/vae'
+FIG_DIR = os.path.join(os.environ['HOME'],'Figures/vae')
 # Default names of the experimental configurations.
 XP_NAMES = ['no DA', 'ETKF', 'single-clima', 'single-transfer',
             'double-clima', 'double-transfer']
@@ -193,6 +193,7 @@ class ClimaExperiment(VaeExperiment):
     do_plot: bool = False
     da_model: DapperModel = dataclasses.field(default_factory = lambda : DapperModel())
     hp_parameters: dict = dataclasses.field(default_factory=dict)
+    do_plot_clima: bool = True
 
     def __post_init__(self):
         self.hp_parameters = {'no_layers': 6,
@@ -225,7 +226,7 @@ class ClimaExperiment(VaeExperiment):
         """ Return default filepath for saving models."""
         A = int(self.da_model.amplitude*100)
         seed = int(self.seed)
-        return os.path.join(MODEL_PATH, f'climaK3_{A:02d}_{seed:04d}.pkl')
+        return os.path.join(MODEL_PATH, f'climaK4_{A:02d}_{seed:04d}.pkl')
 
     def save(self, filepath):
         with open(filepath, 'wb') as stream:
@@ -265,13 +266,13 @@ class ClimaExperiment(VaeExperiment):
         # Sample encoder
         dko = self.HMM.tseq.dko
         samples = self.xx[::dko]
-        zz_mu, zz_sig, zz = self.hypermodel.encoder.predict([samples])
+        zz_mu, zz_sig, zz = self.model.encoder.predict([samples])
         zz_sig = np.exp(.5*zz_sig)
 
         # Sample decoder
         z = np.random.normal(
             size=(np.size(samples, 0), self.hp.get('latent_dim')))
-        zxx_mu, zxx_sig, zxx_angle, zxx = self.hypermodel.decoder.predict(z)
+        zxx_mu, zxx_sig, zxx_angle, zxx = self.model.decoder.predict(z)
         zxx_sig = np.exp(.5*zxx_sig)
 
         # Plot distributions
@@ -288,6 +289,7 @@ class ClimaExperiment(VaeExperiment):
         builder = vae.StateCoderBuilder()
         self.hypermodel = vae.DenseVae(builder)
         self.hp = self.hypermodel.build_hp(**self.hp_parameters)
+        
 
         # Create the VAE that actually holds the weights. 
         reset_random_seeds(self.seed)
@@ -298,11 +300,15 @@ class ClimaExperiment(VaeExperiment):
         else:
             # Generate climatology
             self._run_da_model(self.seed)
-
+            
             # Fit hypermodel to output
             self.hypermodel.fit(self.hp, self.model, self.xx,
                                 verbose=False, shuffle=True)
-            #self.save(self.filepath)
+            
+            self.save(self.filepath)
+            
+        if self.do_plot_clima:
+            self.plot_clima()
             
         return self
     
@@ -418,7 +424,10 @@ class DaExperiment(VaeExperiment):
         
         for xp in iter(xps):
             if (xp.name, xp_seed) not in self.done:
+                print("RUNNING ",xp.name, xp.seed)
                 completed.append(self.run_xp(xp, xp_seed, HMM, xx, yy))
+            else:
+                print("SKIPPING ",xp.name, xp_seed)
             
         return completed
         
@@ -510,6 +519,7 @@ def run_exp(exp):
         #Run all repetitions.
         exp.load()
         for clima_seed, xp_seed in exp.seed_list:
+            print('exp.run_seed',clima_seed,xp_seed)
             exp.run_seed(clima_seed, xp_seed)
         exp.save()
     elif index>=len(exp.seed_list):
